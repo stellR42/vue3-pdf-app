@@ -1,8 +1,4 @@
-/**
- * @licstart The following is the entire license notice for the
- * Javascript code in this page
- *
- * Copyright 2020 Mozilla Foundation
+/* Copyright 2024 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,79 +11,111 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
- * @licend The above is the entire license notice for the
- * Javascript code in this page
  */
-"use strict";
-
-Object.defineProperty(exports, "__esModule", {
-  value: true
-});
-exports.PDFOutlineViewer = void 0;
-
-var _pdf = require("../pdf");
-
-const DEFAULT_TITLE = "\u2013";
-
-class PDFOutlineViewer {
-  constructor({
-    container,
-    linkService,
-    eventBus
-  }) {
-    this.container = container;
-    this.linkService = linkService;
-    this.eventBus = eventBus;
-    this.reset();
-
-    eventBus._on("toggleoutlinetree", this.toggleOutlineTree.bind(this));
+import "core-js/modules/es.array.push.js";
+import "core-js/modules/es.map.get-or-insert.js";
+import "core-js/modules/es.map.get-or-insert-computed.js";
+import { BaseTreeViewer } from "./base_tree_viewer.js";
+import { internalOpt } from "./internal_evt.js";
+import { SidebarView } from "./ui_utils.js";
+class PDFOutlineViewer extends BaseTreeViewer {
+  constructor(options) {
+    super(options);
+    this.linkService = options.linkService;
+    this.downloadManager = options.downloadManager;
+    const {
+      eventBus
+    } = this;
+    eventBus.on("toggleoutlinetree", this._toggleAllTreeItems.bind(this), internalOpt);
+    eventBus.on("currentoutlineitem", this._currentOutlineItem.bind(this), internalOpt);
+    eventBus.on("pagechanging", evt => {
+      this._currentPageNumber = evt.pageNumber;
+    }, internalOpt);
+    eventBus.on("pagesloaded", evt => {
+      this._isPagesLoaded = !!evt.pagesCount;
+      this._currentOutlineItemCapability?.resolve(this._isPagesLoaded);
+    }, internalOpt);
+    eventBus.on("sidebarviewchanged", evt => {
+      this._sidebarView = evt.view;
+    }, internalOpt);
   }
-
   reset() {
-    this.outline = null;
-    this.lastToggleIsShow = true;
-    this.container.textContent = "";
-    this.container.classList.remove("outlineWithDeepNesting");
+    super.reset();
+    this._outline = null;
+    this._pageNumberToDestHashCapability = null;
+    this._currentPageNumber = 1;
+    this._isPagesLoaded = null;
+    this._currentOutlineItemCapability?.resolve(false);
+    this._currentOutlineItemCapability = null;
   }
-
   _dispatchEvent(outlineCount) {
+    this._currentOutlineItemCapability = Promise.withResolvers();
+    if (outlineCount === 0 || this._pdfDocument?.loadingParams.disableAutoFetch) {
+      this._currentOutlineItemCapability.resolve(false);
+    } else if (this._isPagesLoaded !== null) {
+      this._currentOutlineItemCapability.resolve(this._isPagesLoaded);
+    }
     this.eventBus.dispatch("outlineloaded", {
       source: this,
-      outlineCount
+      outlineCount,
+      currentOutlineItemPromise: this._currentOutlineItemCapability.promise
     });
   }
-
   _bindLink(element, {
     url,
     newWindow,
-    dest
+    action,
+    attachmentId,
+    attachment,
+    dest,
+    setOCGState
   }) {
     const {
       linkService
     } = this;
-
     if (url) {
-      (0, _pdf.addLinkAttributes)(element, {
-        url,
-        target: newWindow ? _pdf.LinkTarget.BLANK : linkService.externalLinkTarget,
-        rel: linkService.externalLinkRel,
-        enabled: linkService.externalLinkEnabled
-      });
+      linkService.addLinkAttributes(element, url, newWindow);
       return;
     }
-
+    if (action) {
+      element.href = linkService.getAnchorUrl("");
+      element.onclick = () => {
+        linkService.executeNamedAction(action);
+        return false;
+      };
+      return;
+    }
+    if (attachmentId && attachment) {
+      element.href = linkService.getAnchorUrl("");
+      const openAttachment = async () => {
+        const content = await linkService.getAttachmentContent(attachmentId);
+        if (content) {
+          this.downloadManager?.openOrDownloadData(content, attachment.filename);
+        }
+      };
+      element.onclick = () => {
+        openAttachment();
+        return false;
+      };
+      return;
+    }
+    if (setOCGState) {
+      element.href = linkService.getAnchorUrl("");
+      element.onclick = () => {
+        linkService.executeSetOCGState(setOCGState);
+        return false;
+      };
+      return;
+    }
     element.href = linkService.getDestinationHash(dest);
-
-    element.onclick = () => {
+    element.onclick = evt => {
+      this._updateCurrentTreeItem(evt.target.parentNode);
       if (dest) {
-        linkService.navigateTo(dest);
+        linkService.goToDestination(dest);
       }
-
       return false;
     };
   }
-
   _setStyles(element, {
     bold,
     italic
@@ -95,121 +123,167 @@ class PDFOutlineViewer {
     if (bold) {
       element.style.fontWeight = "bold";
     }
-
     if (italic) {
       element.style.fontStyle = "italic";
     }
   }
-
   _addToggleButton(div, {
     count,
     items
   }) {
-    const toggler = document.createElement("div");
-    toggler.className = "outlineItemToggler";
-
-    if (count < 0 && Math.abs(count) === items.length) {
-      toggler.classList.add("outlineItemsHidden");
-    }
-
-    toggler.onclick = evt => {
-      evt.stopPropagation();
-      toggler.classList.toggle("outlineItemsHidden");
-
-      if (evt.shiftKey) {
-        const shouldShowAll = !toggler.classList.contains("outlineItemsHidden");
-
-        this._toggleOutlineItem(div, shouldShowAll);
+    let hidden = false;
+    if (count < 0) {
+      let totalCount = items.length;
+      if (totalCount > 0) {
+        const queue = [...items];
+        while (queue.length > 0) {
+          const {
+            count: nestedCount,
+            items: nestedItems
+          } = queue.shift();
+          if (nestedCount > 0 && nestedItems.length > 0) {
+            totalCount += nestedItems.length;
+            queue.push(...nestedItems);
+          }
+        }
       }
-    };
-
-    div.insertBefore(toggler, div.firstChild);
-  }
-
-  _toggleOutlineItem(root, show = false) {
-    this.lastToggleIsShow = show;
-
-    for (const toggler of root.querySelectorAll(".outlineItemToggler")) {
-      toggler.classList.toggle("outlineItemsHidden", !show);
+      if (Math.abs(count) === totalCount) {
+        hidden = true;
+      }
     }
+    super._addToggleButton(div, hidden);
   }
-
-  toggleOutlineTree() {
-    if (!this.outline) {
+  _toggleAllTreeItems() {
+    if (!this._outline) {
       return;
     }
-
-    this._toggleOutlineItem(this.container, !this.lastToggleIsShow);
+    super._toggleAllTreeItems();
   }
-
   render({
-    outline
+    outline,
+    pdfDocument
   }) {
-    let outlineCount = 0;
-
-    if (this.outline) {
+    if (this._outline) {
       this.reset();
     }
-
-    this.outline = outline || null;
-
+    this._outline = outline || null;
+    this._pdfDocument = pdfDocument || null;
     if (!outline) {
-      this._dispatchEvent(outlineCount);
-
+      this._dispatchEvent(0);
       return;
     }
-
     const fragment = document.createDocumentFragment();
     const queue = [{
       parent: fragment,
-      items: this.outline
+      items: outline
     }];
-    let hasAnyNesting = false;
-
+    let outlineCount = 0,
+      hasAnyNesting = false;
     while (queue.length > 0) {
       const levelData = queue.shift();
-
       for (const item of levelData.items) {
         const div = document.createElement("div");
-        div.className = "outlineItem";
+        div.className = "treeItem";
         const element = document.createElement("a");
-
         this._bindLink(element, item);
-
         this._setStyles(element, item);
-
-        element.textContent = (0, _pdf.removeNullCharacters)(item.title) || DEFAULT_TITLE;
-        div.appendChild(element);
-
+        element.textContent = this._normalizeTextContent(item.title);
+        div.append(element);
         if (item.items.length > 0) {
           hasAnyNesting = true;
-
           this._addToggleButton(div, item);
-
           const itemsDiv = document.createElement("div");
-          itemsDiv.className = "outlineItems";
-          div.appendChild(itemsDiv);
+          itemsDiv.className = "treeItems";
+          div.append(itemsDiv);
           queue.push({
             parent: itemsDiv,
             items: item.items
           });
         }
-
-        levelData.parent.appendChild(div);
+        levelData.parent.append(div);
         outlineCount++;
       }
     }
-
-    if (hasAnyNesting) {
-      this.container.classList.add("outlineWithDeepNesting");
-      this.lastToggleIsShow = fragment.querySelectorAll(".outlineItemsHidden").length === 0;
-    }
-
-    this.container.appendChild(fragment);
-
-    this._dispatchEvent(outlineCount);
+    this._finishRendering(fragment, outlineCount, hasAnyNesting);
   }
-
+  async _currentOutlineItem() {
+    if (!this._isPagesLoaded) {
+      throw new Error("_currentOutlineItem: All pages have not been loaded.");
+    }
+    if (!this._outline || !this._pdfDocument) {
+      return;
+    }
+    const pageNumberToDestHash = await this._getPageNumberToDestHash(this._pdfDocument);
+    if (!pageNumberToDestHash) {
+      return;
+    }
+    this._updateCurrentTreeItem(null);
+    if (this._sidebarView !== SidebarView.OUTLINE) {
+      return;
+    }
+    for (let i = this._currentPageNumber; i > 0; i--) {
+      const destHash = pageNumberToDestHash.get(i);
+      if (!destHash) {
+        continue;
+      }
+      const linkElement = this.container.querySelector(`a[href="${destHash}"]`);
+      if (!linkElement) {
+        continue;
+      }
+      this._scrollToCurrentTreeItem(linkElement.parentNode);
+      break;
+    }
+  }
+  async _getPageNumberToDestHash(pdfDocument) {
+    if (this._pageNumberToDestHashCapability) {
+      return this._pageNumberToDestHashCapability.promise;
+    }
+    this._pageNumberToDestHashCapability = Promise.withResolvers();
+    const pageNumberToDestHash = new Map(),
+      pageNumberNesting = new Map();
+    const queue = [{
+      nesting: 0,
+      items: this._outline
+    }];
+    while (queue.length > 0) {
+      const levelData = queue.shift(),
+        currentNesting = levelData.nesting;
+      for (const {
+        dest,
+        items
+      } of levelData.items) {
+        let explicitDest, pageNumber;
+        if (typeof dest === "string") {
+          explicitDest = await pdfDocument.getDestination(dest);
+          if (pdfDocument !== this._pdfDocument) {
+            return null;
+          }
+        } else {
+          explicitDest = dest;
+        }
+        if (Array.isArray(explicitDest)) {
+          const [destRef] = explicitDest;
+          if (destRef && typeof destRef === "object") {
+            pageNumber = pdfDocument.cachedPageNumber(destRef);
+          } else if (Number.isInteger(destRef)) {
+            pageNumber = destRef + 1;
+          }
+          if (Number.isInteger(pageNumber) && (!pageNumberToDestHash.has(pageNumber) || currentNesting > pageNumberNesting.get(pageNumber))) {
+            const destHash = this.linkService.getDestinationHash(dest);
+            pageNumberToDestHash.set(pageNumber, destHash);
+            pageNumberNesting.set(pageNumber, currentNesting);
+          }
+        }
+        if (items.length > 0) {
+          queue.push({
+            nesting: currentNesting + 1,
+            items
+          });
+        }
+      }
+    }
+    this._pageNumberToDestHashCapability.resolve(pageNumberToDestHash.size > 0 ? pageNumberToDestHash : null);
+    return this._pageNumberToDestHashCapability.promise;
+  }
 }
-
-exports.PDFOutlineViewer = PDFOutlineViewer;
+export { PDFOutlineViewer };

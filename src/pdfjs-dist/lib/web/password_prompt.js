@@ -1,8 +1,4 @@
-/**
- * @licstart The following is the entire license notice for the
- * Javascript code in this page
- *
- * Copyright 2020 Mozilla Foundation
+/* Copyright 2024 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,80 +11,74 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
- * @licend The above is the entire license notice for the
- * Javascript code in this page
  */
-"use strict";
-
-Object.defineProperty(exports, "__esModule", {
-  value: true
-});
-exports.PasswordPrompt = void 0;
-
-var _ui_utils = require("./ui_utils.js");
-
-var _pdf = require("../pdf");
-
+import { PasswordResponses } from "../pdf.js";
 class PasswordPrompt {
-  constructor(options, overlayManager, l10n = _ui_utils.NullL10n) {
-    this.overlayName = options.overlayName;
-    this.container = options.container;
+  #activeCapability = null;
+  #updateCallback = null;
+  #reason = null;
+  constructor(options, overlayManager, isViewerEmbedded = false) {
+    this.dialog = options.dialog;
     this.label = options.label;
     this.input = options.input;
     this.submitButton = options.submitButton;
     this.cancelButton = options.cancelButton;
     this.overlayManager = overlayManager;
-    this.l10n = l10n;
-    this.updateCallback = null;
-    this.reason = null;
-    this.submitButton.addEventListener("click", this.verify.bind(this));
+    this._isViewerEmbedded = isViewerEmbedded;
+    this.submitButton.addEventListener("click", this.#verify.bind(this));
     this.cancelButton.addEventListener("click", this.close.bind(this));
     this.input.addEventListener("keydown", e => {
       if (e.keyCode === 13) {
-        this.verify();
+        this.#verify();
+        e.preventDefault();
       }
     });
-    this.overlayManager.register(this.overlayName, this.container, this.close.bind(this), true);
+    this.overlayManager.register(this.dialog, true);
+    this.dialog.addEventListener("close", this.#cancel.bind(this));
   }
-
-  open() {
-    this.overlayManager.open(this.overlayName).then(() => {
+  async open() {
+    await this.#activeCapability?.promise;
+    this.#activeCapability = Promise.withResolvers();
+    try {
+      await this.overlayManager.open(this.dialog);
+    } catch (ex) {
+      this.#activeCapability.resolve();
+      throw ex;
+    }
+    const passwordIncorrect = this.#reason === PasswordResponses.INCORRECT_PASSWORD;
+    if (!this._isViewerEmbedded || passwordIncorrect) {
       this.input.focus();
-      let promptString;
-
-      if (this.reason === _pdf.PasswordResponses.INCORRECT_PASSWORD) {
-        promptString = this.l10n.get("password_invalid", null, "Invalid password. Please try again.");
-      } else {
-        promptString = this.l10n.get("password_label", null, "Enter the password to open this PDF file.");
-      }
-
-      promptString.then(msg => {
-        this.label.textContent = msg;
-      });
-    });
+    }
+    this.label.setAttribute("data-l10n-id", passwordIncorrect ? "pdfjs-password-invalid" : "pdfjs-password-label");
   }
-
-  close() {
-    this.overlayManager.close(this.overlayName).then(() => {
-      this.input.value = "";
-    });
+  async close() {
+    this.overlayManager.closeIfActive(this.dialog);
   }
-
-  verify() {
+  #verify() {
     const password = this.input.value;
-
-    if (password && password.length > 0) {
-      this.close();
-      this.updateCallback(password);
+    if (password?.length > 0) {
+      this.#invokeCallback(password);
     }
   }
-
-  setUpdateCallback(updateCallback, reason) {
-    this.updateCallback = updateCallback;
-    this.reason = reason;
+  #cancel() {
+    this.#invokeCallback(new Error("PasswordPrompt cancelled."));
+    this.#activeCapability.resolve();
   }
-
+  #invokeCallback(password) {
+    if (!this.#updateCallback) {
+      return;
+    }
+    this.close();
+    this.input.value = "";
+    this.#updateCallback(password);
+    this.#updateCallback = null;
+  }
+  async setUpdateCallback(updateCallback, reason) {
+    if (this.#activeCapability) {
+      await this.#activeCapability.promise;
+    }
+    this.#updateCallback = updateCallback;
+    this.#reason = reason;
+  }
 }
-
-exports.PasswordPrompt = PasswordPrompt;
+export { PasswordPrompt };

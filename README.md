@@ -1,193 +1,138 @@
-# Vue3 Pdf App
+# vue3-pdf-app
 
-Vue 3 PDF viewer based on Mozilla's PDFJS. Forked from https://github.com/sandanat/vue-pdf-app.
+Vue 3 PDF viewer component built on Mozilla's [PDF.js](https://github.com/mozilla/pdf.js) 6.5 viewer: the full toolbar, search, thumbnails, annotations, print and download, with TypeScript types and nothing to host.
 
 [![npm (tag)](https://img.shields.io/npm/v/vue3-pdf-app/latest)](https://www.npmjs.com/package/vue3-pdf-app)
 
-100% PDFJS functionality:
+It's the complete PDF.js viewer inside your Vue app, the same one Firefox uses for PDFs.
 
-- zoom
-- open
-- print
-- download
-- rotate
-- text selection
-- search panel
-- pdf document password
-- thumbnail, outline, attachments, annotation layers
+![pdf sample](./readme/sample.png 'Pdf example')
 
-Easily localized configurable toolbar
+Coming from 1.x? Version 2 has breaking changes, see [Upgrading from 1.x](#upgrading-from-1x). Originally based on [vue-pdf-app](https://github.com/sandanat/vue-pdf-app).
 
-Toolbar custom UI
+## Contents
 
-Cross-browser support
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Props](#props)
+- [Events](#events)
+- [How the viewer behaves](#how-the-viewer-behaves)
+- [Colors](#colors)
+- [Lazy loading](#lazy-loading)
+- [TypeScript](#typescript)
+- [Licenses](#licenses)
+- [Upgrading from 1.x](#upgrading-from-1x)
+- [FAQ](https://github.com/stellR42/vue3-pdf-app/blob/master/FAQ.md)
 
-Color customization
+## Features
 
-Buttons icons customization
+Everything the PDF.js viewer does:
 
-Light/dark themes
+- zoom, rotate, page navigation, scroll and spread modes
+- print and download
+- find, with match case, whole words and highlight all
+- thumbnails, outline, attachments and layers sidebar
+- password protected PDFs
+- document properties
+- highlight, text, drawing, image, signature and comment tools
+- JPEG 2000 and JBIG2 images, Chinese, Japanese and Korean text, and PDFs without embedded fonts
 
-Built-in typescript support
+Nothing to host: the pdf.js worker, CSS, icons, image decoders, character maps and fonts are all bundled. The decoders, character maps and fonts are separate chunks that only load when a PDF needs them.
 
-![pdf sample](./readme/sample.png "Pdf expample")
+## Requirements
 
-[Live demo](https://codesandbox.io/s/vue3-pdf-app-wnh9zs?file=/src/App.vue)
-
-[FAQ](https://github.com/stellr42/vue3-pdf-app/blob/master/FAQ.md)
+- Vue 3.2 or newer
+- A bundler that understands ES modules (Vite, webpack 5, Rollup). The package is ES module only.
+- Chrome or Edge 125+, Safari 18+, or a current Firefox
+- A browser. The package uses `window` as soon as it's imported, so it can't be imported during server-side rendering. In a server-rendered app, import it only on the client (see [Lazy loading](#lazy-loading)).
 
 ## Installation
+
 ```
 npm install vue3-pdf-app
 ```
+
 ## Usage
 
 ```vue
 <template>
-  <!-- used `style="height: 100vh;"` because without it in the Firefox 89 and Chrome 91 (June 2021) the `vue-pdf-app` is not rendering on the page, just empty space without any errors (since `vue-pdf-app` does not have height and it is the top tag in the generated markup ) -->
-  <!-- or you can just wrap `vue-pdf-app` in <div> tag and set height for it via CSS (like in `Script tag (unpkg)` example below) -->
-  <vue-pdf-app style="height: 100vh;" pdf="https://file-examples-com.github.io/uploads/2017/10/file-example_PDF_1MB.pdf"></vue-pdf-app>
+  <!-- The viewer fills its container, so give it a height -->
+  <vue-pdf-app style="height: 100vh" pdf="/sample.pdf" />
 </template>
 
-<script>
-import VuePdfApp from "vue3-pdf-app";
-// import this to use default icons for buttons
-import "vue3-pdf-app/dist/icons/main.css";
-
-export default {
-  components: {
-    VuePdfApp
-  }
-};
+<script setup>
+import VuePdfApp from 'vue3-pdf-app';
 </script>
 ```
 
-## API
+Three things to know:
 
-### :pdf
+- **Give it a height.** The viewer fills its container and has no height of its own.
+- **No CSS import.** The styles are added to the page when the viewer mounts. They're scoped to `.pdf-app`, so they don't touch the rest of your app.
+- **One viewer at a time.** pdf.js keeps a single viewer object for the whole page. Mounting a second viewer closes the first and logs a warning.
 
-- Type: `string | null | ArrayBuffer | TypedArray`
-- Required: `false`
-- Usage:
+## Props
+
+All props are optional.
+
+| Prop                          | Type                    | What it does                            | When it's read               |
+| ----------------------------- | ----------------------- | --------------------------------------- | ---------------------------- |
+| [`pdf`](#pdf)                 | `string \| ArrayBuffer` | The PDF to show                         | Any time, changes apply      |
+| [`config`](#config)           | `ToolbarConfig`         | Hides toolbar buttons                   | Any time, changes apply      |
+| [`theme`](#theme)             | `'dark' \| 'light'`     | Forces a theme                          | Any time, changes apply      |
+| [`file-name`](#file-name)     | `string`                | Name for downloads                      | Each time a PDF opens        |
+| [`page-number`](#page-number) | `number`                | Page to open at                         | Each time a PDF opens        |
+| [`page-scale`](#page-scale)   | `number \| string`      | Starting zoom                           | Once, when the viewer mounts |
+| [`title`](#title)             | `boolean`               | Puts the PDF's title in the browser tab | Once, when the viewer mounts |
+| [`options`](#options)         | `PdfOptions`            | pdf.js settings                         | Once, when the viewer mounts |
+
+To change a mount-only prop later, re-create the viewer by giving it a different `key`.
+
+### pdf
+
+- Type: `string | ArrayBuffer`
+
+URL of the PDF (blob URLs work), or its contents. An `ArrayBuffer` is copied, so your buffer stays usable. Changing it opens the new file; setting it to `undefined` closes the current one.
 
 ```vue
 <vue-pdf-app pdf="https://example.com/sample.pdf" />
-<vue-pdf-app :pdf="ArrayBuffer" />
+<vue-pdf-app :pdf="arrayBuffer" />
 ```
 
-### :title
+### config
 
-- Description: `true` renames document title to pdf file name.
-- Type: `boolean`
-- Required: `false`
-- Default: `false`
-- Usage:
+- Type: `ToolbarConfig`
+
+Hides toolbar buttons or whole groups. Set a button or a group to `false` to hide it. Anything you leave out stays visible, so you only list what you want hidden.
 
 ```vue
-<vue-pdf-app :title="true" />
-```
+<script setup>
+// hide the "Previous page" button
+const config = { toolbar: { toolbarViewerLeft: { previous: false } } };
 
-### :theme.sync
+// hide the whole page navigation group
+const config2 = { toolbar: { toolbarViewerLeft: false } };
 
-- Type: `"dark" | "light"`
-- Required: `false`
-- Usage:
-
-```vue
-<vue-pdf-app theme="dark" />
-<vue-pdf-app :theme="theme" />
-<vue-pdf-app :theme.sync="theme" />
-```
-
-### :fileName
-
-- Description: when pdf is passed like an array buffer default download file name is `document.pdf`. Set this prop to override it.
-- Type: `string`
-- Required: `false`
-- Usage:
-
-```vue
-<vue-pdf-app :pdf="ArrayBuffer" file-name="file name" />
-```
-
-### :pageScale
-
-- Description: default page scale.
-- Type: `number | "page-actual"| "page-width"| "page-height"| "page-fit"| "auto"`
-- Required: `false`
-- Usage:
-
-```vue
-// 20%
-<vue-pdf-app page-scale="20" />
-<vue-pdf-app :page-scale="20" />
-<vue-pdf-app :page-scale="page-actual" />
-```
-
-### :pageNumber
-
-- Description: pdfjs stores last viewed page of a file in `window.localStorage.getItem("pdfjs.history")`. Specify the prop to override it.
-- Type: `number`
-- Required: `false`
-- Usage:
-
-```vue
-<vue-pdf-app :page-number="1" />
-```
-
-### :config
-
-- Description: toolbar configuration. Toolbar is available by default. Specify `false` for buttons or whole group of buttons to disable them.
-- Type: `toolbar config (see below)`
-- Required: `false`
-- Default: `toolbar config`
-- Usage:
-
-```vue
-<vue-pdf-app :config="config" />
-
-<script>
-export default {
-  data() {
-    return {
-      // disable "Previous page" button
-      config: {
-        toolbar: {
-          toolbarViewerLeft: {
-            previous: false
-          }
-        }
-      },
-
-      // disable whole page navigation panel
-      config2: {
-        toolbar: {
-          toolbarViewerLeft: false
-        }
-      },
-
-      // disable whole panel
-      config3: {
-        toolbar: false
-      }
-    };
-  }
-};
+// hide the whole toolbar
+const config3 = { toolbar: false };
 </script>
+
+<template>
+  <vue-pdf-app :config="config" />
+</template>
 ```
 
 <details>
-<summary>Config specification</summary>
+<summary>Every key</summary>
 
-![Config legend](./readme/config-legend.jpg "Config legend")
-
-<code>
-<pre>
+```js
 {
   sidebar: {
     viewThumbnail: true,
     viewOutline: true,
-    viewAttachments: true,
+    viewAttachments: true
   },
   secondaryToolbar: {
     secondaryPresentationMode: true,
@@ -201,20 +146,21 @@ export default {
     pageRotateCcw: true,
     cursorSelectTool: true,
     cursorHandTool: true,
+    scrollPage: true,
     scrollVertical: true,
     scrollHorizontal: true,
     scrollWrapped: true,
     spreadNone: true,
     spreadOdd: true,
     spreadEven: true,
-    documentProperties: true,
+    documentProperties: true
   },
   toolbar: {
     toolbarViewerLeft: {
       findbar: true,
       previous: true,
       next: true,
-      pageNumber: true,
+      pageNumber: true
     },
     toolbarViewerRight: {
       presentationMode: true,
@@ -222,617 +168,208 @@ export default {
       print: true,
       download: true,
       viewBookmark: true,
+      editorComment: true,
+      editorHighlight: true,
+      editorFreeText: true,
+      editorInk: true,
+      editorStamp: true,
+      editorSignature: true
     },
     toolbarViewerMiddle: {
       zoomOut: true,
       zoomIn: true,
-      scaleSelectContainer: true,
-    },
-  },
-  errorWrapper: true,
-};
-</pre>
-</code>
+      scaleSelectContainer: true
+    }
+  }
+}
+```
+
+The presentation mode, open file and bookmark buttons only exist in the secondary menu (the `>>` button). Each has two keys, one under `secondaryToolbar` and one under `toolbarViewerRight`. Setting either one to `false` hides it.
+
 </details>
 
-### :id-config
+### theme
 
-- Description: If default toolbar UI doesn't suit you it is possible to build custom toolbar. The prop contains elements ID to which to bind functionality. If element ID is specified in this prop appropriate button will be hidden in a default toolbar. May not work with UI framework components. That is because pdfjs internally manages attributes specific to a certain HTML element (for instance pdfjs toggles `disabled` attribute of a button but it won't if a div is used instead of a button). So it is better to use native HTML element specified as recommended in ID config specification below. Four slots are specially designed to build custom toolbar (are situated near a pdf page): `viewer-header, viewer-prepend, viewer-append, viewer-footer` (refer slots API). It is also possible to use other slots or elements outside vue-pdf-app.
-- Type: `ID config (see below)`
-- Required: `false`
-- Usage:
+- Type: `'dark' | 'light'`
+
+Forces a theme. Leave it unset to follow the browser's light or dark setting.
+
+```vue
+<vue-pdf-app theme="dark" />
+```
+
+### file-name
+
+- Type: `string`
+
+File name used for downloads and shown in document properties. Without it, PDFs opened from an `ArrayBuffer` or blob URL download as `document.pdf`. It only applies to the PDF from the `pdf` prop; a file the user opens from the toolbar keeps its own name.
+
+```vue
+<vue-pdf-app :pdf="blobUrl" file-name="report.pdf" />
+```
+
+### page-number
+
+- Type: `number`
+
+Page to show when a PDF opens. Without it, a PDF the user has opened before reopens where they left it (see [Reopening a PDF](#reopening-a-pdf)).
+
+```vue
+<vue-pdf-app :page-number="3" />
+```
+
+### page-scale
+
+- Type: `number | 'page-actual' | 'page-width' | 'page-height' | 'page-fit' | 'auto'`
+
+Starting zoom. Numbers are percentages.
+
+```vue
+<vue-pdf-app :page-scale="75" />
+<vue-pdf-app page-scale="page-width" />
+```
+
+### title
+
+- Type: `boolean`
+- Default: `false`
+
+`true` sets the browser tab's title (`document.title`) to the PDF's title.
+
+### options
+
+- Type: `PdfOptions`
+
+Settings passed straight to pdf.js (its `AppOptions`). They're applied after the component's own defaults, so they can override them. The common ones are typed; any other option from pdf.js's [app_options.js](https://github.com/mozilla/pdf.js/blob/master/web/app_options.js) works too.
+
+```vue
+<!-- open links in the same tab, and start with the sidebar showing thumbnails -->
+<vue-pdf-app :options="{ externalLinkTarget: 1, sidebarViewOnLoad: 1 }" />
+```
+
+The component's defaults:
+
+- links in the PDF open in a new tab
+- the signature and comment tools are on
+- the viewer adds nothing to the browser's back/forward history
+- JavaScript inside PDFs is off
+- the interface is English
+
+## Events
+
+| Event            | Fires                                                     |
+| ---------------- | --------------------------------------------------------- |
+| `after-created`  | Once per mount, when pdf.js is set up, before a PDF opens |
+| `open`           | Each time a PDF has loaded, before its pages are drawn    |
+| `pages-rendered` | Each time a PDF's pages are all set up                    |
+
+They fire in that order. `open` and `pages-rendered` also fire for PDFs the user opens from the toolbar.
+
+Every event passes `app`, which is pdf.js's own viewer object ([PDFViewerApplication](https://github.com/mozilla/pdf.js/blob/master/web/app.js)). Use it to drive the viewer from your code:
 
 ```vue
 <template>
-  <div>
-    <button :id="idConfig.zoomOut" type="button">Zoom out</button>
-    <vue-pdf-app :id-config="idConfig">
-      <template #viewer-prepend>
-        <div class="viewer-prepend">
-          <button :id="idConfig.zoomIn" type="button">Zoom in</button>
-        </div>
-      </template>
-    </vue-pdf-app>
-  </div>
+  <vue-pdf-app pdf="/sample.pdf" @open="showInfo" @pages-rendered="fitHeight" />
 </template>
 
-<script>
-export default {
-  data() {
-    return {
-      idConfig: { zoomIn: "zoomInId", zoomOut: "zoomOutId" }
-    };
-  }
-};
-</script>
-```
-
-<details>
-<summary>ID config specification</summary>
-<code>
-<pre>
-{
-
-cursorHandTool?: string; // &lt;button&gt; is recommended
-cursorSelectTool?: string; // &lt;button&gt; is recommended
-documentProperties?: string; // &lt;button&gt; is recommended
-download?: string; // &lt;button&gt; is recommended
-findbar?: string; // &lt;div&gt; is recommended
-findEntireWord?: string; // &lt;input type="checkbox"&gt; is recommended
-findHighlightAll?: string; // &lt;input type="checkbox"&gt; is recommended
-findMessage?: string; // &lt;span&gt; is recommended
-findInput?: string; // &lt;input type="text"&gt; is recommended
-findMatchCase?: string; // &lt;input type="checkbox"&gt; is recommended
-findNext?: string; // &lt;button&gt; is recommended
-findPrevious?: string; // &lt;button&gt; is recommended
-findResultsCount?: string; // &lt;span&gt; is recommended
-firstPage?: string; // &lt;button&gt; is recommended
-lastPage?: string; // &lt;button&gt; is recommended
-nextPage?: string; // &lt;button&gt; is recommended
-numPages?: string; // total pages qty. &lt;span&gt; is recommended
-openFile?: string; // &lt;button&gt; is recommended
-pageNumber?: string; // input for page number. &lt;input type="number"&gt; is recommended
-pageRotateCcw?: string; // &lt;button&gt; is recommended
-pageRotateCw?: string; // &lt;button&gt; is recommended
-presentationMode?: string; // &lt;button&gt; is recommended
-previousPage?: string; // &lt;button&gt; is recommended
-print?: string; // &lt;button&gt; is recommended
-scrollHorizontal?: string; // &lt;button&gt; is recommended
-scrollVertical?: string; // &lt;button&gt; is recommended
-scrollWrapped?: string; // &lt;button&gt; is recommended
-sidebarToggle?: string; // &lt;button&gt; is recommended
-spreadEven?: string; // &lt;button&gt; is recommended
-spreadNone?: string; // &lt;button&gt; is recommended
-spreadOdd?: string; // &lt;button&gt; is recommended
-toggleFindbar?: string; // &lt;button&gt; is recommended
-viewAttachments?: string; // &lt;button&gt; is recommended
-viewBookmark?: string; // &lt;a&gt; tag is recommended
-viewOutline?: string; // &lt;button&gt; tag is recommended
-viewThumbnail?: string; // &lt;button&gt; tag is recommended
-zoomIn?: string; // &lt;button&gt; tag is recommended
-zoomOut?: string; // &lt;button&gt; tag is recommended
+<script setup>
+async function showInfo(app) {
+  const { info } = await app.pdfDocument.getMetadata();
+  console.log(info.Title, info.Author);
 }
 
-</pre>
-</code>
-</details>
-
-> ℹ️ Note that elements must be in HTML document by the time vue-pdf-app is mounting (use `v-show` instead of `v-if` directive if necessary). Otherwise an error occurs.
-
-### @after-created(PDFViewerApplication)
-
-- Description: emitted only once when Pdfjs library is binded to vue component. Can be used to set Pdfjs config before pdf document opening.
-- Arguments:
-  - PDFViewerApplication - [pdf application](https://github.com/mozilla/pdf.js/blob/master/web/app.js#L198)
-- Usage:
-
-```vue
-<vue-pdf-app @after-created="afterCreated" />
-```
-
-### @open(PDFViewerApplication)
-
-- Description: emitted when pdf is opened but pages are not rendered.
-- Arguments:
-  - PDFViewerApplication - [pdf application](https://github.com/mozilla/pdf.js/blob/master/web/app.js#L198)
-- Usage:
-
-```vue
-<vue-pdf-app @open="openHandler" />
-```
-
-### @pages-rendered(PDFViewerApplication)
-
-- Description: emitted when pdf document pages are rendered. Can be used to set default pages scale, for instance.
-- Arguments:
-  - PDFViewerApplication - [pdf application](https://github.com/mozilla/pdf.js/blob/master/web/app.js#L198)
-- Usage:
-
-```vue
-<vue-pdf-app @pages-rendered="pagesRendered" />
-
-<script>
-export default {
-  methods: {
-    pagesRendered(pdfApp) {
-      setTimeout(() => (pdfApp.pdfViewer.currentScaleValue = "page-height"));
-    }
-  }
-};
+function fitHeight(app) {
+  app.pdfViewer.currentScaleValue = 'page-height';
+}
 </script>
 ```
 
-> ℹ️ Events are triggered in the following order `after-created (once) => open => pages-rendered`
+Two notes on `app`:
 
-### Slots
+- Don't store it in reactive state (`ref`, `reactive`). It's a large object and Vue would wrap all of it. A plain variable is fine.
+- pdf.js has no types for its viewer, so `app` is typed as `PdfApp` with only the commonly used parts filled in. The rest is `any`.
 
-#### Slot names
+## How the viewer behaves
 
-- toolbar-left-prepend
-- toolbar-left-append
-- toolbar-middle-prepend
-- toolbar-middle-append
-- toolbar-right-prepend
-- toolbar-right-append
-- toolbar-sidebar-prepend
-- toolbar-sidebar-append
-- secondary-toolbar-prepend
-- secondary-toolbar-append
-- footer
--  viewer-header: slot before `viewer-prepend` slot. Can be used to build custom toolbar.
--  viewer-prepend: slot before `viewerContainer` div. Can be used to build custom toolbar.
--  viewer-append: slot after `viewerContainer` div. Can be used to build custom toolbar.
--  viewer-footer: slot after `viewer-append` slot. Can be used to build custom toolbar.
+### Keyboard and zoom
 
-#### Slot props
+pdf.js's shortcuts (Ctrl+F, Ctrl+P, arrows, `j`, `k`, `r` and so on) only work while focus is inside the viewer, so they don't take over your app's keys. Ctrl+P outside the viewer prints your page as usual.
 
-Each slot has props:
+Ctrl+wheel and pinch work the same way: over the viewer they zoom the PDF, anywhere else they zoom the page.
 
-1. toggleTheme
+### Reopening a PDF
 
-   Type: (): void.
+When a user opens a PDF they've opened before, it reopens at the page and zoom they left it at. pdf.js remembers this in the browser's `localStorage` for the last 20 files. Set `page-number` to always start on a given page, or pass `:options="{ viewOnLoad: 1 }"` to always start at the top.
 
-   Description: toggle theme handler
+### Unsaved edits
 
-1.  isSidebarHidden
+Highlights, drawings, comments and other edits live only in the viewer. Download saves them into the downloaded file. They're dropped without a prompt when the PDF changes or the viewer unmounts. If your app doesn't save edits anywhere, hide the editing tools through [`config`](#config).
 
-   Type: boolean
+## Colors
 
-   Description: state of a sidebar (visible or hidden). Can be used to manage visibility of custom Attachments, Outline and Thumbnail buttons
-
-1.  isFindbarHidden
-
-   Type: boolean
-
-   Description: state of a findbar (visible or hidden). Can be used to manage visibility of custom findbar
-
-```vue
-<vue-pdf-app>
-  <template #toolbar-left-prepend="{ toggleTheme }">
-    <button @click="toggleTheme" type="button">Toggle theme</button>
-  </template>
-</vue-pdf-app>
-```
-
-## Color customization
-
-Colors of the pdf viewer are customized via custom css properties:
-
-```html
-<style>
-  /* for dark theme */
-  .pdf-app.dark {
-    --pdf-toolbar-color: black;
-  }
-
-  /* for light theme */
-  .pdf-app.light {
-    --pdf-toolbar-color: white;
-  }
-</style>
-```
-
-<details>
-  <summary>Custom css properties specification</summary>
-  <table>
-    <tr>
-      <th>Property</th>
-      <th>Applied to selectors</th>
-      <th>Description</th>
-    </tr>
-    <tr>
-      <td>--pdf-app-background-color</td>
-      <td>.pdf-app</td>
-      <td>Background color for root pdf container</td>
-    </tr>
-    <tr>
-      <td>--pdf-button-hover-font-color</td>
-      <td>
-        .pdf-app .toolbarButton:hover
-        <hr>
-        .pdf-app .toolbarButton:focus
-        <hr>
-        .pdf-app .dropdownToolbarButton:hover
-        <hr>
-        .pdf-app .secondaryToolbarButton:hover
-        <hr>
-        .pdf-app .secondaryToolbarButton:focus
-        <hr>
-      </td>
-      <td>Hover color for buttons of toolbar and secondary toolbar</td>
-    </tr>
-    <tr>
-      <td>--pdf-button-toggled-color</td>
-      <td>
-        .pdf-app .toolbarButton.toggled
-        <hr>
-        .pdf-app .splitToolbarButton.toggled > .toolbarButton.toggled
-        <hr>
-        .pdf-app .secondaryToolbarButton.toggled
-        <hr>
-        .pdf-app .outlineItemToggler:hover
-        <hr>
-        .pdf-app .outlineItemToggler:hover + a
-        <hr>
-        .pdf-app .outlineItemToggler:hover ~ .outlineItems
-        <hr>
-        .pdf-app .outlineItem > a:hover
-        <hr>
-        .pdf-app .attachmentsItem > button:hover
-      </td>
-      <td>
-        Background color for toggleable buttons when selected, outline items on hover, attachment items on hover
-        <img src="./readme/toggleable-items.jpg" alt="toggleable items">
-       </td>
-    </tr>
-    <tr>
-      <td>--pdf-dialog-button-color</td>
-      <td>.pdf-app .dialog .overlayButton</td>
-      <td>
-        <img src="./readme/dialog-buttons.jpg" alt="dialog buttons">
-      </td>
-    </tr>
-    <tr>
-      <td>--pdf-dialog-button-font-color</td>
-      <td>.pdf-app .dialog .overlayButton</td>
-      <td>
-        <img src="./readme/dialog-buttons.jpg" alt="dialog buttons">
-      </td>
-    </tr>
-    <tr>
-      <td>--pdf-error-more-info-color</td>
-      <td>.pdf-app #errorMoreInfo</td>
-      <td>
-        <img src="./readme/error-more-info.jpg" alt="error more info">
-      </td>
-    </tr>
-    <tr>
-      <td>--pdf-error-more-info-font-color</td>
-      <td>.pdf-app #errorMoreInfo</td>
-      <td>
-        <img src="./readme/error-more-info.jpg" alt="error more info">
-      </td>
-    </tr>
-    <tr>
-      <td>--pdf-error-wrapper-color</td>
-      <td>.pdf-app #errorWrapper</td>
-      <td>
-        <img src="./readme/error-wrapper.jpg" alt="error wrapper">
-      </td>
-    </tr>
-    <tr>
-      <td>--pdf-find-input-placeholder-font-color</td>
-      <td>.pdf-app #findInput::placeholder</td>
-      <td>
-        <img src="./readme/find-input-placeholder.jpg" alt="find input placeholder">
-      </td>
-    </tr>
-    <tr>
-      <td>--pdf-find-message-font-color</td>
-      <td>.pdf-app #findMsg</td>
-      <td>
-        <img src="./readme/find-message.jpg" alt="find message">
-      </td>
-    </tr>
-    <tr>
-      <td>--pdf-find-results-count-color</td>
-      <td>.pdf-app #findResultsCount</td>
-      <td>
-        <img src="./readme/find-results-count.jpg" alt="find results count">
-      </td>
-    </tr>
-    <tr>
-      <td>--pdf-find-results-count-font-color</td>
-      <td>.pdf-app #findResultsCount</td>
-      <td>
-        <img src="./readme/find-results-count.jpg" alt="find results count">
-      </td>
-    </tr>
-    <tr>
-      <td>--pdf-horizontal-toolbar-separator-color</td>
-      <td>.pdf-app .horizontalToolbarSeparator</td>
-      <td>
-        <img src="./readme/horizontal-separator.jpg" alt="horizontal separator">
-      </td>
-    </tr>
-    <tr>
-      <td>--pdf-input-color</td>
-      <td>.pdf-app .toolbarField</td>
-      <td>
-        <img src="./readme/toolbar-field.jpg" alt="toolbar field">
-      </td>
-    </tr>
-    <tr>
-      <td>--pdf-input-font-color</td>
-      <td>.pdf-app .toolbarField</td>
-      <td>
-        <img src="./readme/toolbar-field.jpg" alt="toolbar field">
-      </td>
-    </tr>
-    <tr>
-      <td>--pdf-loading-bar-color</td>
-      <td>.pdf-app #loadingBar .progress</td>
-      <td>
-        <img src="./readme/loading-bar-color.jpg" alt="loading bar color">
-      </td>
-    </tr>
-    <tr>
-      <td>--pdf-loading-bar-secondary-color</td>
-      <td>.pdf-app #loadingBar .progress.indeterminate .glimmer</td>
-      <td>
-        <img src="./readme/loading-bar-secondary-color.jpg" alt="loading bar secondary color">
-      </td>
-    </tr>
-    <tr>
-      <td>--pdf-not-found-color</td>
-      <td>.pdf-app #findInput.notFound</td>
-      <td>
-        <img src="./readme/not-found.jpg" alt="not found">
-      </td>
-    </tr>
-    <tr>
-      <td>--pdf-overlay-container-color</td>
-      <td>.pdf-app #overlayContainer</td>
-      <td>Background color for overlay container of dialogs</td>
-    </tr>
-    <tr>
-      <td>--pdf-overlay-container-dialog-color</td>
-      <td>.pdf-app #overlayContainer > .container > .dialog</td>
-      <td>
-        Background color for document properties, password, print dialogs
-      </td>
-    </tr>
-    <tr>
-      <td>--pdf-overlay-container-dialog-font-color</td>
-      <td>.pdf-app #overlayContainer > .container > .dialog</td>
-      <td>
-        Font color for document properties, password, print dialogs
-      </td>
-    </tr>
-    <tr>
-      <td>--pdf-overlay-container-dialog-separator-color</td>
-      <td>.pdf-app .dialog .separator</td>
-      <td>
-        <img src="./readme/dialog-separator.jpg" alt="dialog separator">
-      </td>
-    </tr>
-    <tr>
-      <td>--pdf-sidebar-content-color</td>
-      <td>.pdf-app #sidebarContent</td>
-      <td>
-        Background color for sidebar
-      </td>
-    </tr>
-    <tr>
-      <td>--pdf-split-toolbar-button-separator-color</td>
-      <td>
-        .pdf-app .splitToolbarButtonSeparator
-        <hr>
-        .pdf-app .verticalToolbarSeparator
-      </td>
-      <td>
-        <img src="./readme/vertical-separator.jpg" alt="vertical separator">
-      </td>
-    </tr>
-    <tr>
-      <td>--pdf-thumbnail-selection-ring-selected-color</td>
-      <td>.pdf-app .thumbnail.selected > .thumbnailSelectionRing</td>
-      <td>
-        Border color for selected thumbnail
-        <img src="./readme/thumbnail-border.jpg" alt="thumbnail border">
-      </td>
-    </tr>
-    <tr>
-      <td>--pdf-thumbnail-selection-ring-color</td>
-      <td>
-        .pdf-app a:focus > .thumbnail > .thumbnailSelectionRing
-        <hr>
-        .pdf-app .thumbnail:hover > .thumbnailSelectionRing
-      </td>
-      <td>
-        Border color for thumbnail on hover and focus
-        <img src="./readme/thumbnail-border.jpg" alt="thumbnail border">
-      </td>
-    </tr>
-    <tr>
-      <td>--pdf-toolbar-color</td>
-      <td>
-        .pdf-app #toolbarContainer
-        <hr>
-        .pdf-app .findbar
-        <hr>
-        .pdf-app .secondaryToolbar
-        <hr>
-        .pdf-app .doorHanger:after
-        <hr>
-        .pdf-app .doorHangerRight:after
-        <hr>
-        .pdf-app .dropdownToolbarButton > select
-        <hr>
-        .pdf-app .dropdownToolbarButton > select > option
-      </td>
-      <td>
-        Background color for toolbar, findbar, secondary toolbar, page scale dropdown
-      </td>
-    </tr>
-    <tr>
-      <td>--pdf-toolbar-font-color</td>
-      <td>
-        .pdf-app .toolbarButton
-        <hr>
-        .pdf-app .dropdownToolbarButton
-        <hr>
-        .pdf-app .secondaryToolbarButton
-        <hr>
-        .pdf-app .dropdownToolbarButton > select
-        <hr>
-        .pdf-app .toolbarLabel
-        <hr>
-        .pdf-app .outlineItem > a
-        <hr>
-        .pdf-app .attachmentsItem > button
-      </td>
-      <td>
-        Font color for toolbar, findbar, secondary toolbar, page scale dropdown, attachments name</td>
-    </tr>
-    <tr>
-      <td>--pdf-toolbar-sidebar-color</td>
-      <td>.pdf-app #toolbarSidebar</td>
-      <td>
-        <img src="./readme/sidebar.jpg" alt="sidebar">
-      </td>
-    </tr>
-  </table>
-</details>
-
-## Icons customization
-
-To use default icons `import "vue3-pdf-app/dist/icons/main.css";`.
-
-To use custom icons you have to implement [icons.css](https://github.com/sandanat/vue-pdf-app/blob/master/src/sass/icons.scss):
+The viewer uses pdf.js's own CSS variables. Override them on `.pdf-app`:
 
 ```css
-.vue-pdf-app-icon::before,
-.vue-pdf-app-icon::after {
-  font-family: "your font family";
-}
-
-.vue-pdf-app-icon.zoom-out::before {
-  content: "icon code";
+.pdf-app {
+  --toolbar-bg-color: #1e3a5f;
+  --main-color: white;
+  --body-bg-color: #e5e7eb;
 }
 ```
 
-## Light/dark themes
+See `viewer.css` in pdf.js for the full list.
 
-<details>
-<summary>Algorithm of theme apply</summary>
-<img src="./readme/algorithm-of-theme-apply.jpg" alt="Algorithm of theme apply">
-</details>
+## Lazy loading
 
-Toggle theme button is not implemented by default.
-It's up to you to decide where to place it.
-The button can be implemented with slots:
+The package is about 3.4 MB (about 830 KB gzipped). Load it only when it's needed:
 
 ```vue
-<vue-pdf-app>
-  <template #footer="{ toggleTheme }">
-    <button @click="toggleTheme" type="button">Toggle theme</button>
-  </template>
-</vue-pdf-app>
-```
+<script setup>
+import { defineAsyncComponent } from 'vue';
 
-## Localized panel
-
-English is the default language for panel.
-Use `<link rel="resource" type="application/l10n" href="path-to-localization-file">` in your html for localization.
-See [localization file examples](https://github.com/mozilla/pdf.js/tree/master/l10n "file examples").
-
-## Examples
-### Lazy loading
-
-PDFJS is a huge package (see the library size table above).
-So use lazy loading to split your bundle into small pieces.
-
-```vue
-<template>
-  <div id="app">
-    <vue-pdf-app></vue-pdf-app>
-  </div>
-</template>
-
-<script>
-import "vue3-pdf-app/dist/icons/main.css";
-import Loader from "./components/Loader.vue";
-
-export default {
-  name: "App",
-  components: {
-    "vue-pdf-app": () => ({
-      component: new Promise((res) => {
-        return setTimeout(
-          () => res(import(/* webpackChunkName: "pdf-viewer" */ "vue-pdf-app")),
-          4000
-        );
-      }),
-      loading: Loader
-    })
-  }
-};
+const VuePdfApp = defineAsyncComponent(() => import('vue3-pdf-app'));
 </script>
 ```
 
-### PDFJS interaction
+## TypeScript
 
-You can interact with pdfjs library when pdf is opened via `open` event.
+Types ship with the package. Besides the component, it exports:
 
-```vue
-<template>
-  <div id="app">
-    <div id="pdf-wrapper">
-      <vue-pdf-app pdf="/sample.pdf" @open="openHandler"></vue-pdf-app>
-    </div>
-    <div id="info">
-      <h1>PDF info:</h1>
-      <div v-for="item in info" :key="item.name">
-        <span>{{ item.name }}: {{ item.value }}</span>
-        <br />
-      </div>
-    </div>
-  </div>
-</template>
-
-<script>
-import "vue3-pdf-app/dist/icons/main.css";
-import VuePdfApp from "vue3-pdf-app";
-
-export default {
-  name: "App",
-  components: {
-    VuePdfApp
-  },
-  data() {
-    return {
-      info: []
-    };
-  },
-  methods: {
-    async openHandler(pdfApp) {
-      this.info = [];
-      const info = await pdfApp.pdfDocument
-        .getMetadata()
-        .catch(console.error.bind(console));
-
-      if (!info) return;
-      const props = Object.keys(info.info);
-      props.forEach((prop) => {
-        const obj = {
-          name: prop,
-          value: info.info[prop]
-        };
-        this.info.push(obj);
-      });
-    }
-  }
-};
-</script>
+```ts
+import VuePdfApp, {
+  type ToolbarConfig, // the config prop
+  type PdfOptions, // the options prop
+  type PdfApp, // the app object the events pass
+  type PdfDocument, // app.pdfDocument
+  type PageScale, // the page-scale prop
+  type Theme, // the theme prop
+} from 'vue3-pdf-app';
 ```
+
+## Licenses
+
+The package is MIT licensed. It bundles pdf.js and the fonts, character maps and image decoders that come with it. Their license texts are in `dist/THIRD_PARTY_LICENSES.txt`.
+
+## Upgrading from 1.x
+
+2.0 moves from pdf.js 2.4 to pdf.js 6.5. pdf.js rebuilt its viewer in between, so these changed:
+
+| 1.x                                                                      | 2.0                                                                                                                                                                     |
+| ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `import "vue3-pdf-app/dist/icons/main.css"`                              | Remove it. Styles and icons are built in, and the file no longer exists.                                                                                                |
+| Custom icons through `.vue-pdf-app-icon`                                 | Not supported. The viewer uses pdf.js's own icons.                                                                                                                      |
+| `id-config` prop (custom toolbar bound by element id)                    | Removed. Hide buttons with `config` and drive pdf.js from your own buttons through the `app` object from `after-created`, for example `app.zoomIn()` or `app.page = 3`. |
+| Slots (`toolbar-left-prepend`, `footer`, `viewer-header` and the rest)   | Removed. Put your own buttons outside the viewer and use the `app` object as above.                                                                                     |
+| `toggleTheme`, `isSidebarHidden`, `isFindbarHidden` slot props           | Removed with the slots. Use the `theme` prop.                                                                                                                           |
+| `theme.sync` / `v-model:theme`                                           | `theme` is a plain prop now. Leaving it unset follows the browser's setting.                                                                                            |
+| `.pdf-app.dark` / `.pdf-app.light` classes and `--pdf-*` color variables | Removed. See [Colors](#colors).                                                                                                                                         |
+| `config.errorWrapper`                                                    | Removed. pdf.js 6 shows load errors in its own dialog.                                                                                                                  |
+| `config` keys                                                            | Still work. Added `secondaryToolbar.scrollPage` and the editor buttons under `toolbarViewerRight`.                                                                      |
+| UMD build, `<script>` tag, CommonJS `require`                            | ES module only.                                                                                                                                                         |
+| `<link rel="resource" type="application/l10n">` translations             | Only English is bundled.                                                                                                                                                |
+| Old browsers                                                             | Chrome 125+ and Safari 18+ are needed.                                                                                                                                  |
+| Keyboard shortcuts and Ctrl+wheel zoom on the whole page                 | Only inside the viewer.                                                                                                                                                 |
+| Links in the PDF replaced your app                                       | Open in a new tab. `:options="{ externalLinkTarget: 1 }"` restores the old behavior.                                                                                    |
+| Two viewers on one page broke both                                       | The newer one wins, the older one closes.                                                                                                                               |
+
+New in 2.0: the `options` prop, the editing tools (highlight, text, drawing, image, signature, comment), bundled JPEG 2000 and JBIG2 decoders, bundled character maps and fonts, and nothing to host next to your app.

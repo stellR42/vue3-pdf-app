@@ -1,8 +1,4 @@
-/**
- * @licstart The following is the entire license notice for the
- * Javascript code in this page
- *
- * Copyright 2020 Mozilla Foundation
+/* Copyright 2024 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,59 +11,39 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
- * @licend The above is the entire license notice for the
- * Javascript code in this page
  */
-"use strict";
-
-Object.defineProperty(exports, "__esModule", {
-  value: true
-});
-exports.isDestHashesEqual = isDestHashesEqual;
-exports.isDestArraysEqual = isDestArraysEqual;
-exports.PDFHistory = void 0;
-
-var _ui_utils = require("./ui_utils.js");
-
+import "core-js/modules/es.json.stringify.js";
+import { isValidRotation, parseQueryString } from "./ui_utils.js";
+import { internalOpt } from "./internal_evt.js";
+import { updateUrlHash } from "../pdf.js";
+import { waitOnEventOrTimeout } from "./event_utils.js";
 const HASH_CHANGE_TIMEOUT = 1000;
 const POSITION_UPDATED_THRESHOLD = 50;
 const UPDATE_VIEWAREA_TIMEOUT = 1000;
-
 function getCurrentHash() {
   return document.location.hash;
 }
-
 class PDFHistory {
+  #eventAC = null;
   constructor({
     linkService,
     eventBus
   }) {
     this.linkService = linkService;
-    this.eventBus = eventBus || (0, _ui_utils.getGlobalEventBus)();
+    this.eventBus = eventBus;
     this._initialized = false;
     this._fingerprint = "";
     this.reset();
-    this._boundEvents = null;
-    this._isViewerInPresentationMode = false;
-
-    this.eventBus._on("presentationmodechanged", evt => {
-      this._isViewerInPresentationMode = evt.active || evt.switchInProgress;
-    });
-
-    this.eventBus._on("pagesinit", () => {
+    this.eventBus.on("pagesinit", () => {
       this._isPagesLoaded = false;
-
-      const onPagesLoaded = evt => {
-        this.eventBus._off("pagesloaded", onPagesLoaded);
-
+      this.eventBus.on("pagesloaded", evt => {
         this._isPagesLoaded = !!evt.pagesCount;
-      };
-
-      this.eventBus._on("pagesloaded", onPagesLoaded);
-    });
+      }, {
+        once: true,
+        ...internalOpt
+      });
+    }, internalOpt);
   }
-
   initialize({
     fingerprint,
     resetHistory = false,
@@ -77,18 +53,14 @@ class PDFHistory {
       console.error('PDFHistory.initialize: The "fingerprint" must be a non-empty string.');
       return;
     }
-
     if (this._initialized) {
       this.reset();
     }
-
     const reInitialized = this._fingerprint !== "" && this._fingerprint !== fingerprint;
     this._fingerprint = fingerprint;
     this._updateUrl = updateUrl === true;
     this._initialized = true;
-
-    this._bindEvents();
-
+    this.#bindEvents();
     const state = window.history.state;
     this._popStateInProgress = false;
     this._blockHashChange = 0;
@@ -97,41 +69,28 @@ class PDFHistory {
     this._uid = this._maxUid = 0;
     this._destination = null;
     this._position = null;
-
-    if (!this._isValidState(state, true) || resetHistory) {
+    if (!this.#isValidState(state, true) || resetHistory) {
       const {
         hash,
         page,
         rotation
-      } = this._parseCurrentHash();
-
+      } = this.#parseCurrentHash(true);
       if (!hash || reInitialized || resetHistory) {
-        this._pushOrReplaceState(null, true);
-
+        this.#pushOrReplaceState(null, true);
         return;
       }
-
-      this._pushOrReplaceState({
+      this.#pushOrReplaceState({
         hash,
         page,
         rotation
       }, true);
-
       return;
     }
-
     const destination = state.destination;
-
-    this._updateInternalState(destination, state.uid, true);
-
-    if (this._uid > this._maxUid) {
-      this._maxUid = this._uid;
-    }
-
+    this.#updateInternalState(destination, state.uid, true);
     if (destination.rotation !== undefined) {
       this._initialRotation = destination.rotation;
     }
-
     if (destination.dest) {
       this._initialBookmark = JSON.stringify(destination.dest);
       this._destination.page = null;
@@ -141,25 +100,19 @@ class PDFHistory {
       this._initialBookmark = `page=${destination.page}`;
     }
   }
-
   reset() {
     if (this._initialized) {
-      this._pageHide();
-
+      this.#pageHide();
       this._initialized = false;
-
-      this._unbindEvents();
+      this.#unbindEvents();
     }
-
     if (this._updateViewareaTimeout) {
       clearTimeout(this._updateViewareaTimeout);
       this._updateViewareaTimeout = null;
     }
-
     this._initialBookmark = null;
     this._initialRotation = null;
   }
-
   push({
     namedDest = null,
     explicitDest,
@@ -168,47 +121,38 @@ class PDFHistory {
     if (!this._initialized) {
       return;
     }
-
     if (namedDest && typeof namedDest !== "string") {
       console.error("PDFHistory.push: " + `"${namedDest}" is not a valid namedDest parameter.`);
       return;
     } else if (!Array.isArray(explicitDest)) {
       console.error("PDFHistory.push: " + `"${explicitDest}" is not a valid explicitDest parameter.`);
       return;
-    } else if (!(Number.isInteger(pageNumber) && pageNumber > 0 && pageNumber <= this.linkService.pagesCount)) {
+    } else if (!this.#isValidPage(pageNumber)) {
       if (pageNumber !== null || this._destination) {
         console.error("PDFHistory.push: " + `"${pageNumber}" is not a valid pageNumber parameter.`);
         return;
       }
     }
-
     const hash = namedDest || JSON.stringify(explicitDest);
-
     if (!hash) {
       return;
     }
-
     let forceReplace = false;
-
     if (this._destination && (isDestHashesEqual(this._destination.hash, hash) || isDestArraysEqual(this._destination.dest, explicitDest))) {
       if (this._destination.page) {
         return;
       }
-
       forceReplace = true;
     }
-
     if (this._popStateInProgress && !forceReplace) {
       return;
     }
-
-    this._pushOrReplaceState({
+    this.#pushOrReplaceState({
       dest: explicitDest,
       hash,
       page: pageNumber,
       rotation: this.linkService.rotation
     }, forceReplace);
-
     if (!this._popStateInProgress) {
       this._popStateInProgress = true;
       Promise.resolve().then(() => {
@@ -216,254 +160,229 @@ class PDFHistory {
       });
     }
   }
-
+  pushPage(pageNumber) {
+    if (!this._initialized) {
+      return;
+    }
+    if (!this.#isValidPage(pageNumber)) {
+      console.error(`PDFHistory.pushPage: "${pageNumber}" is not a valid page number.`);
+      return;
+    }
+    if (this._destination?.page === pageNumber) {
+      return;
+    }
+    if (this._popStateInProgress) {
+      return;
+    }
+    this.#pushOrReplaceState({
+      dest: null,
+      hash: `page=${pageNumber}`,
+      page: pageNumber,
+      rotation: this.linkService.rotation
+    });
+    if (!this._popStateInProgress) {
+      this._popStateInProgress = true;
+      Promise.resolve().then(() => {
+        this._popStateInProgress = false;
+      });
+    }
+  }
   pushCurrentPosition() {
     if (!this._initialized || this._popStateInProgress) {
       return;
     }
-
-    this._tryPushCurrentPosition();
+    this.#tryPushCurrentPosition();
   }
-
   back() {
     if (!this._initialized || this._popStateInProgress) {
       return;
     }
-
     const state = window.history.state;
-
-    if (this._isValidState(state) && state.uid > 0) {
+    if (this.#isValidState(state) && state.uid > 0) {
       window.history.back();
     }
   }
-
   forward() {
     if (!this._initialized || this._popStateInProgress) {
       return;
     }
-
     const state = window.history.state;
-
-    if (this._isValidState(state) && state.uid < this._maxUid) {
+    if (this.#isValidState(state) && state.uid < this._maxUid) {
       window.history.forward();
     }
   }
-
   get popStateInProgress() {
     return this._initialized && (this._popStateInProgress || this._blockHashChange > 0);
   }
-
   get initialBookmark() {
     return this._initialized ? this._initialBookmark : null;
   }
-
   get initialRotation() {
     return this._initialized ? this._initialRotation : null;
   }
-
-  _pushOrReplaceState(destination, forceReplace = false) {
+  #pushOrReplaceState(destination, forceReplace = false) {
     const shouldReplace = forceReplace || !this._destination;
     const newState = {
       fingerprint: this._fingerprint,
       uid: shouldReplace ? this._uid : this._uid + 1,
       destination
     };
-
-    this._updateInternalState(destination, newState.uid);
-
+    this.#updateInternalState(destination, newState.uid);
     let newUrl;
-
-    if (this._updateUrl && destination && destination.hash) {
-      const baseUrl = document.location.href.split("#")[0];
-
-      if (!baseUrl.startsWith("file://")) {
-        newUrl = `${baseUrl}#${destination.hash}`;
+    if (this._updateUrl && destination?.hash) {
+      const {
+        href,
+        protocol
+      } = document.location;
+      if (protocol !== "file:") {
+        newUrl = updateUrlHash(href, destination.hash);
       }
     }
-
     if (shouldReplace) {
       window.history.replaceState(newState, "", newUrl);
     } else {
-      this._maxUid = this._uid;
       window.history.pushState(newState, "", newUrl);
     }
   }
-
-  _tryPushCurrentPosition(temporary = false) {
+  #tryPushCurrentPosition(temporary = false) {
     if (!this._position) {
       return;
     }
-
     let position = this._position;
-
     if (temporary) {
       position = Object.assign(Object.create(null), this._position);
       position.temporary = true;
     }
-
     if (!this._destination) {
-      this._pushOrReplaceState(position);
-
+      this.#pushOrReplaceState(position);
       return;
     }
-
     if (this._destination.temporary) {
-      this._pushOrReplaceState(position, true);
-
+      this.#pushOrReplaceState(position, true);
       return;
     }
-
     if (this._destination.hash === position.hash) {
       return;
     }
-
     if (!this._destination.page && (POSITION_UPDATED_THRESHOLD <= 0 || this._numPositionUpdates <= POSITION_UPDATED_THRESHOLD)) {
       return;
     }
-
     let forceReplace = false;
-
     if (this._destination.page >= position.first && this._destination.page <= position.page) {
-      if (this._destination.dest || !this._destination.first) {
+      if (this._destination.dest !== undefined || !this._destination.first) {
         return;
       }
-
       forceReplace = true;
     }
-
-    this._pushOrReplaceState(position, forceReplace);
+    this.#pushOrReplaceState(position, forceReplace);
   }
-
-  _isValidState(state, checkReload = false) {
+  #isValidPage(val) {
+    return Number.isInteger(val) && val > 0 && val <= this.linkService.pagesCount;
+  }
+  #isValidState(state, checkReload = false) {
     if (!state) {
       return false;
     }
-
     if (state.fingerprint !== this._fingerprint) {
       if (checkReload) {
         if (typeof state.fingerprint !== "string" || state.fingerprint.length !== this._fingerprint.length) {
           return false;
         }
-
         const [perfEntry] = performance.getEntriesByType("navigation");
-
-        if (!perfEntry || perfEntry.type !== "reload") {
+        if (perfEntry?.type !== "reload") {
           return false;
         }
       } else {
         return false;
       }
     }
-
-    if (!Number.isInteger(state.uid) || state.uid < 0) {
+    if (!Number.isInteger(state.uid) || state.uid < 0 || state.destination === null || typeof state.destination !== "object") {
       return false;
     }
-
-    if (state.destination === null || typeof state.destination !== "object") {
-      return false;
-    }
-
     return true;
   }
-
-  _updateInternalState(destination, uid, removeTemporary = false) {
+  #updateInternalState(destination, uid, removeTemporary = false) {
     if (this._updateViewareaTimeout) {
       clearTimeout(this._updateViewareaTimeout);
       this._updateViewareaTimeout = null;
     }
-
-    if (removeTemporary && destination && destination.temporary) {
+    if (removeTemporary && destination?.temporary) {
       delete destination.temporary;
     }
-
     this._destination = destination;
     this._uid = uid;
+    this._maxUid = Math.max(this._maxUid, uid);
     this._numPositionUpdates = 0;
   }
-
-  _parseCurrentHash() {
+  #parseCurrentHash(checkNameddest = false) {
     const hash = unescape(getCurrentHash()).substring(1);
-    let page = (0, _ui_utils.parseQueryString)(hash).page | 0;
-
-    if (!(Number.isInteger(page) && page > 0 && page <= this.linkService.pagesCount)) {
+    const params = parseQueryString(hash);
+    const nameddest = params.get("nameddest") || "";
+    let page = params.get("page") | 0;
+    if (!this.#isValidPage(page) || checkNameddest && nameddest.length > 0) {
       page = null;
     }
-
     return {
       hash,
       page,
       rotation: this.linkService.rotation
     };
   }
-
-  _updateViewarea({
+  #updateViewarea({
     location
   }) {
     if (this._updateViewareaTimeout) {
       clearTimeout(this._updateViewareaTimeout);
       this._updateViewareaTimeout = null;
     }
-
     this._position = {
-      hash: this._isViewerInPresentationMode ? `page=${location.pageNumber}` : location.pdfOpenParams.substring(1),
+      hash: location.pdfOpenParams.substring(1),
       page: this.linkService.page,
       first: location.pageNumber,
       rotation: location.rotation
     };
-
     if (this._popStateInProgress) {
       return;
     }
-
     if (POSITION_UPDATED_THRESHOLD > 0 && this._isPagesLoaded && this._destination && !this._destination.page) {
       this._numPositionUpdates++;
     }
-
     if (UPDATE_VIEWAREA_TIMEOUT > 0) {
       this._updateViewareaTimeout = setTimeout(() => {
         if (!this._popStateInProgress) {
-          this._tryPushCurrentPosition(true);
+          this.#tryPushCurrentPosition(true);
         }
-
         this._updateViewareaTimeout = null;
       }, UPDATE_VIEWAREA_TIMEOUT);
     }
   }
-
-  _popState({
+  #popState({
     state
   }) {
     const newHash = getCurrentHash(),
-          hashChanged = this._currentHash !== newHash;
+      hashChanged = this._currentHash !== newHash;
     this._currentHash = newHash;
-
     if (!state) {
       this._uid++;
-
       const {
         hash,
         page,
         rotation
-      } = this._parseCurrentHash();
-
-      this._pushOrReplaceState({
+      } = this.#parseCurrentHash();
+      this.#pushOrReplaceState({
         hash,
         page,
         rotation
       }, true);
-
       return;
     }
-
-    if (!this._isValidState(state)) {
+    if (!this.#isValidState(state)) {
       return;
     }
-
     this._popStateInProgress = true;
-
     if (hashChanged) {
       this._blockHashChange++;
-      (0, _ui_utils.waitOnEventOrTimeout)({
+      waitOnEventOrTimeout({
         target: window,
         name: "hashchange",
         delay: HASH_CHANGE_TIMEOUT
@@ -471,131 +390,93 @@ class PDFHistory {
         this._blockHashChange--;
       });
     }
-
     const destination = state.destination;
-
-    this._updateInternalState(destination, state.uid, true);
-
-    if (this._uid > this._maxUid) {
-      this._maxUid = this._uid;
-    }
-
-    if ((0, _ui_utils.isValidRotation)(destination.rotation)) {
+    this.#updateInternalState(destination, state.uid, true);
+    if (isValidRotation(destination.rotation)) {
       this.linkService.rotation = destination.rotation;
     }
-
     if (destination.dest) {
-      this.linkService.navigateTo(destination.dest);
+      this.linkService.goToDestination(destination.dest);
     } else if (destination.hash) {
       this.linkService.setHash(destination.hash);
     } else if (destination.page) {
       this.linkService.page = destination.page;
     }
-
     Promise.resolve().then(() => {
       this._popStateInProgress = false;
     });
   }
-
-  _pageHide() {
+  #pageHide() {
     if (!this._destination || this._destination.temporary) {
-      this._tryPushCurrentPosition();
+      this.#tryPushCurrentPosition();
     }
   }
-
-  _bindEvents() {
-    if (this._boundEvents) {
+  #bindEvents() {
+    if (this.#eventAC) {
       return;
     }
-
-    this._boundEvents = {
-      updateViewarea: this._updateViewarea.bind(this),
-      popState: this._popState.bind(this),
-      pageHide: this._pageHide.bind(this)
-    };
-
-    this.eventBus._on("updateviewarea", this._boundEvents.updateViewarea);
-
-    window.addEventListener("popstate", this._boundEvents.popState);
-    window.addEventListener("pagehide", this._boundEvents.pageHide);
+    this.#eventAC = new AbortController();
+    const {
+      signal
+    } = this.#eventAC;
+    this.eventBus.on("updateviewarea", this.#updateViewarea.bind(this), {
+      signal,
+      ...internalOpt
+    });
+    window.addEventListener("popstate", this.#popState.bind(this), {
+      signal
+    });
+    window.addEventListener("pagehide", this.#pageHide.bind(this), {
+      signal
+    });
   }
-
-  _unbindEvents() {
-    if (!this._boundEvents) {
-      return;
-    }
-
-    this.eventBus._off("updateviewarea", this._boundEvents.updateViewarea);
-
-    window.removeEventListener("popstate", this._boundEvents.popState);
-    window.removeEventListener("pagehide", this._boundEvents.pageHide);
-    this._boundEvents = null;
+  #unbindEvents() {
+    this.#eventAC?.abort();
+    this.#eventAC = null;
   }
-
 }
-
-exports.PDFHistory = PDFHistory;
-
 function isDestHashesEqual(destHash, pushHash) {
   if (typeof destHash !== "string" || typeof pushHash !== "string") {
     return false;
   }
-
   if (destHash === pushHash) {
     return true;
   }
-
-  const {
-    nameddest
-  } = (0, _ui_utils.parseQueryString)(destHash);
-
+  const nameddest = parseQueryString(destHash).get("nameddest");
   if (nameddest === pushHash) {
     return true;
   }
-
   return false;
 }
-
 function isDestArraysEqual(firstDest, secondDest) {
   function isEntryEqual(first, second) {
-    if (typeof first !== typeof second) {
+    if (typeof first !== typeof second || Array.isArray(first) || Array.isArray(second)) {
       return false;
     }
-
-    if (Array.isArray(first) || Array.isArray(second)) {
-      return false;
-    }
-
     if (first !== null && typeof first === "object" && second !== null) {
       if (Object.keys(first).length !== Object.keys(second).length) {
         return false;
       }
-
       for (const key in first) {
         if (!isEntryEqual(first[key], second[key])) {
           return false;
         }
       }
-
       return true;
     }
-
     return first === second || Number.isNaN(first) && Number.isNaN(second);
   }
-
   if (!(Array.isArray(firstDest) && Array.isArray(secondDest))) {
     return false;
   }
-
   if (firstDest.length !== secondDest.length) {
     return false;
   }
-
   for (let i = 0, ii = firstDest.length; i < ii; i++) {
     if (!isEntryEqual(firstDest[i], secondDest[i])) {
       return false;
     }
   }
-
   return true;
 }
+export { isDestArraysEqual, isDestHashesEqual, PDFHistory };

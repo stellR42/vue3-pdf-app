@@ -1,8 +1,4 @@
-/**
- * @licstart The following is the entire license notice for the
- * Javascript code in this page
- *
- * Copyright 2020 Mozilla Foundation
+/* Copyright 2024 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,349 +11,666 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
- * @licend The above is the entire license notice for the
- * Javascript code in this page
  */
-"use strict";
-
-Object.defineProperty(exports, "__esModule", {
-  value: true
-});
-exports.FirefoxCom = exports.DownloadManager = void 0;
-
-require("../extensions/firefox/tools/l10n.js");
-
-var _pdf = require("../pdf");
-
-var _app = require("./app.js");
-
-var _preferences = require("./preferences.js");
-
-var _ui_utils = require("./ui_utils.js");
-
+import "core-js/modules/es.iterator.constructor.js";
+import "core-js/modules/es.iterator.filter.js";
+import "core-js/modules/es.iterator.map.js";
+import "core-js/modules/es.map.get-or-insert.js";
+import "core-js/modules/es.map.get-or-insert-computed.js";
+import "core-js/modules/es.set.difference.v2.js";
+import "core-js/modules/es.set.intersection.v2.js";
+import "core-js/modules/es.set.is-disjoint-from.v2.js";
+import "core-js/modules/es.set.is-subset-of.v2.js";
+import "core-js/modules/es.set.is-superset-of.v2.js";
+import "core-js/modules/es.set.symmetric-difference.v2.js";
+import "core-js/modules/es.set.union.v2.js";
+import "core-js/modules/es.typed-array.with.js";
+import "core-js/modules/es.uint8-array.set-from-base64.js";
+import "core-js/modules/es.uint8-array.set-from-hex.js";
+import "core-js/modules/es.uint8-array.to-base64.js";
+import "core-js/modules/es.uint8-array.to-hex.js";
+import { MathClamp, PDFDataRangeTransport } from "../pdf.js";
+import { AppOptions } from "./app_options.js";
+import { BaseDownloadManager } from "./base_download_manager.js";
+import { BaseExternalServices } from "./external_services.js";
+import { BasePreferences } from "./preferences.js";
+import { DEFAULT_SCALE_VALUE } from "./ui_utils.js";
+import { internalOpt } from "./internal_evt.js";
+import { L10n } from "./l10n.js";
 {
   throw new Error('Module "./firefoxcom.js" shall not be used outside MOZCENTRAL builds.');
 }
-
-const FirefoxCom = function FirefoxComClosure() {
-  return {
-    requestSync(action, data) {
-      const request = document.createTextNode("");
-      document.documentElement.appendChild(request);
-      const sender = document.createEvent("CustomEvent");
-      sender.initCustomEvent("pdf.js.message", true, false, {
-        action,
-        data,
-        sync: true
+let viewerApp = {
+  initialized: false
+};
+function initCom(app) {
+  viewerApp = app;
+}
+const PRINT_TO_PDF_BASE_DELAY = 4_500;
+const PRINT_TO_PDF_PER_ENTRY_DELAY = 50;
+const PRINT_TO_PDF_MIN_TIMEOUT = 10_000;
+function getPrintToPDFTimeout(entries) {
+  return Math.max(PRINT_TO_PDF_MIN_TIMEOUT, 2 * (PRINT_TO_PDF_BASE_DELAY + PRINT_TO_PDF_PER_ENTRY_DELAY * entries));
+}
+class FirefoxCom {
+  static requestAsync(action, data, timeout = 0) {
+    return new Promise((resolve, reject) => {
+      const timeoutId = timeout ? setTimeout(reject, timeout, new Error(`"${action}" timed out.`)) : 0;
+      this.request(action, data, response => {
+        clearTimeout(timeoutId);
+        resolve(response);
       });
-      request.dispatchEvent(sender);
-      const response = sender.detail.response;
-      document.documentElement.removeChild(request);
-      return response;
-    },
-
-    request(action, data, callback) {
-      const request = document.createTextNode("");
-
-      if (callback) {
-        document.addEventListener("pdf.js.response", function listener(event) {
-          const node = event.target;
-          const response = event.detail.response;
-          document.documentElement.removeChild(node);
-          document.removeEventListener("pdf.js.response", listener);
-          return callback(response);
-        });
-      }
-
-      document.documentElement.appendChild(request);
-      const sender = document.createEvent("CustomEvent");
-      sender.initCustomEvent("pdf.js.message", true, false, {
-        action,
-        data,
-        sync: false,
-        responseExpected: !!callback
+    });
+  }
+  static request(action, data, callback = null) {
+    const request = document.createTextNode("");
+    if (callback) {
+      request.addEventListener("pdf.js.response", event => {
+        const response = event.detail.response;
+        event.target.remove();
+        callback(response);
+      }, {
+        once: true
       });
-      return request.dispatchEvent(sender);
     }
-
-  };
-}();
-
-exports.FirefoxCom = FirefoxCom;
-
-class DownloadManager {
-  constructor(options) {
-    this.disableCreateObjectURL = false;
-  }
-
-  downloadUrl(url, filename) {
-    FirefoxCom.request("download", {
-      originalUrl: url,
-      filename
-    });
-  }
-
-  downloadData(data, filename, contentType) {
-    const blobUrl = (0, _pdf.createObjectURL)(data, contentType);
-    FirefoxCom.request("download", {
-      blobUrl,
-      originalUrl: blobUrl,
-      filename,
-      isAttachment: true
-    });
-  }
-
-  download(blob, url, filename) {
-    const blobUrl = URL.createObjectURL(blob);
-
-    const onResponse = err => {
-      if (err && this.onerror) {
-        this.onerror(err);
+    document.documentElement.append(request);
+    const sender = new CustomEvent("pdf.js.message", {
+      bubbles: true,
+      cancelable: false,
+      detail: {
+        action,
+        data,
+        responseExpected: !!callback
       }
-
-      URL.revokeObjectURL(blobUrl);
-    };
-
+    });
+    request.dispatchEvent(sender);
+  }
+}
+class DownloadManager extends BaseDownloadManager {
+  _triggerDownload(blobUrl, originalUrl, filename, isAttachment = false, isModified = false) {
     FirefoxCom.request("download", {
       blobUrl,
-      originalUrl: url,
-      filename
-    }, onResponse);
-  }
-
-}
-
-exports.DownloadManager = DownloadManager;
-
-class FirefoxPreferences extends _preferences.BasePreferences {
-  async _writeToStorage(prefObj) {
-    return new Promise(function (resolve) {
-      FirefoxCom.request("setPreferences", prefObj, resolve);
+      originalUrl,
+      filename,
+      isAttachment,
+      isModified
     });
   }
-
+  _getOpenDataUrl(blobUrl, filename, dest = null) {
+    let url = blobUrl + "#filename=" + encodeURIComponent(filename);
+    if (dest) {
+      url += `&filedest=${escape(dest)}`;
+    }
+    return url;
+  }
+}
+class Preferences extends BasePreferences {
   async _readFromStorage(prefObj) {
-    return new Promise(function (resolve) {
-      FirefoxCom.request("getPreferences", prefObj, function (prefStr) {
-        const readPrefs = JSON.parse(prefStr);
-        resolve(readPrefs);
-      });
-    });
+    return FirefoxCom.requestAsync("getPreferences", prefObj);
   }
-
+  async _writeToStorage(prefObj) {
+    return FirefoxCom.requestAsync("setPreferences", prefObj);
+  }
 }
-
-class MozL10n {
-  constructor(mozL10n) {
-    this.mozL10n = mozL10n;
-  }
-
-  async getLanguage() {
-    return this.mozL10n.getLanguage();
-  }
-
-  async getDirection() {
-    return this.mozL10n.getDirection();
-  }
-
-  async get(property, args, fallback) {
-    return this.mozL10n.get(property, args, fallback);
-  }
-
-  async translate(element) {
-    this.mozL10n.translate(element);
-  }
-
-}
-
 (function listenFindEvents() {
-  const events = ["find", "findagain", "findhighlightallchange", "findcasesensitivitychange", "findentirewordchange", "findbarclose"];
-
+  const events = ["find", "findagain", "findhighlightallchange", "findcasesensitivitychange", "findentirewordchange", "findbarclose", "finddiacriticmatchingchange"];
+  const findLen = "find".length;
   const handleEvent = function ({
     type,
     detail
   }) {
-    if (!_app.PDFViewerApplication.initialized) {
+    if (!viewerApp.initialized) {
       return;
     }
-
     if (type === "findbarclose") {
-      _app.PDFViewerApplication.eventBus.dispatch(type, {
+      viewerApp.eventBus.dispatch(type, {
         source: window
       });
-
       return;
     }
-
-    _app.PDFViewerApplication.eventBus.dispatch("find", {
+    viewerApp.eventBus.dispatch("find", {
       source: window,
-      type: type.substring("find".length),
+      type: type.substring(findLen),
       query: detail.query,
-      phraseSearch: true,
       caseSensitive: !!detail.caseSensitive,
       entireWord: !!detail.entireWord,
       highlightAll: !!detail.highlightAll,
-      findPrevious: !!detail.findPrevious
+      findPrevious: !!detail.findPrevious,
+      matchDiacritics: !!detail.matchDiacritics
     });
   };
-
   for (const event of events) {
     window.addEventListener(event, handleEvent);
   }
 })();
-
 (function listenZoomEvents() {
   const events = ["zoomin", "zoomout", "zoomreset"];
-
   const handleEvent = function ({
     type,
     detail
   }) {
-    if (!_app.PDFViewerApplication.initialized) {
+    if (!viewerApp.initialized) {
       return;
     }
-
-    if (type === "zoomreset" && _app.PDFViewerApplication.pdfViewer.currentScaleValue === _ui_utils.DEFAULT_SCALE_VALUE) {
+    if (type === "zoomreset" && viewerApp.pdfViewer.currentScaleValue === DEFAULT_SCALE_VALUE) {
       return;
     }
-
-    _app.PDFViewerApplication.eventBus.dispatch(type, {
+    viewerApp.eventBus.dispatch(type, {
       source: window
     });
   };
-
   for (const event of events) {
     window.addEventListener(event, handleEvent);
   }
 })();
-
-class FirefoxComDataRangeTransport extends _pdf.PDFDataRangeTransport {
+(function listenSaveEvent() {
+  const handleEvent = function ({
+    type,
+    detail
+  }) {
+    if (!viewerApp.initialized) {
+      return;
+    }
+    viewerApp.eventBus.dispatch("download", {
+      source: window
+    });
+  };
+  window.addEventListener("save", handleEvent);
+})();
+(function listenEditingEvent() {
+  const handleEvent = function ({
+    detail
+  }) {
+    if (!viewerApp.initialized) {
+      return;
+    }
+    viewerApp.eventBus.dispatch("editingaction", {
+      source: window,
+      name: detail.name
+    });
+  };
+  window.addEventListener("editingaction", handleEvent);
+})();
+class FirefoxComDataRangeTransport extends PDFDataRangeTransport {
   requestDataRange(begin, end) {
     FirefoxCom.request("requestDataRange", {
       begin,
       end
     });
   }
-
   abort() {
-    FirefoxCom.requestSync("abortLoading", null);
+    FirefoxCom.request("abortLoading", null);
   }
-
 }
-
-class FirefoxExternalServices extends _app.DefaultExternalServices {
-  static updateFindControlState(data) {
+class FirefoxScripting {
+  static async createSandbox(data) {
+    const success = await FirefoxCom.requestAsync("createSandbox", data);
+    if (!success) {
+      throw new Error("Cannot create sandbox.");
+    }
+  }
+  static async dispatchEventInSandbox(event) {
+    FirefoxCom.request("dispatchEventInSandbox", event);
+  }
+  static async destroySandbox() {
+    FirefoxCom.request("destroySandbox", null);
+  }
+}
+class MLManager {
+  #abortSignal = null;
+  #enabled = null;
+  #eventBus = null;
+  #ready = null;
+  #requestResolvers = null;
+  hasProgress = false;
+  static #AI_ALT_TEXT_MODEL_NAME = "moz-image-to-text";
+  constructor({
+    altTextLearnMoreUrl,
+    enableGuessAltText,
+    enableAltTextModelDownload
+  }) {
+    this.altTextLearnMoreUrl = altTextLearnMoreUrl;
+    this.enableAltTextModelDownload = enableAltTextModelDownload;
+    this.enableGuessAltText = enableGuessAltText;
+  }
+  setEventBus(eventBus, abortSignal) {
+    this.#eventBus = eventBus;
+    this.#abortSignal = abortSignal;
+    const evtOpts = {
+      signal: abortSignal,
+      ...internalOpt
+    };
+    eventBus.on("enablealttextmodeldownload", ({
+      value
+    }) => {
+      if (this.enableAltTextModelDownload === value) {
+        return;
+      }
+      if (value) {
+        this.downloadModel("altText");
+      } else {
+        this.deleteModel("altText");
+      }
+    }, evtOpts);
+    eventBus.on("enableguessalttext", ({
+      value
+    }) => {
+      this.toggleService("altText", value);
+    }, evtOpts);
+  }
+  async isEnabledFor(name) {
+    return this.enableGuessAltText && !!(await this.#enabled?.get(name));
+  }
+  isReady(name) {
+    return this.#ready?.has(name) ?? false;
+  }
+  async deleteModel(name) {
+    if (name !== "altText" || !this.enableAltTextModelDownload) {
+      return;
+    }
+    this.enableAltTextModelDownload = false;
+    this.#ready?.delete(name);
+    this.#enabled?.delete(name);
+    await this.toggleService("altText", false);
+    await FirefoxCom.requestAsync("mlDelete", MLManager.#AI_ALT_TEXT_MODEL_NAME);
+  }
+  async loadModel(name) {
+    if (name === "altText" && this.enableAltTextModelDownload) {
+      await this.#loadAltTextEngine(false);
+    }
+  }
+  async downloadModel(name) {
+    if (name !== "altText" || this.enableAltTextModelDownload) {
+      return null;
+    }
+    this.enableAltTextModelDownload = true;
+    return this.#loadAltTextEngine(true);
+  }
+  async guess(data) {
+    if (data?.name !== "altText") {
+      return null;
+    }
+    const resolvers = this.#requestResolvers ||= new Set();
+    const resolver = Promise.withResolvers();
+    resolvers.add(resolver);
+    data.service = MLManager.#AI_ALT_TEXT_MODEL_NAME;
+    FirefoxCom.requestAsync("mlGuess", data).then(response => {
+      if (resolvers.has(resolver)) {
+        resolver.resolve(response);
+        resolvers.delete(resolver);
+      }
+    }).catch(reason => {
+      if (resolvers.has(resolver)) {
+        resolver.reject(reason);
+        resolvers.delete(resolver);
+      }
+    });
+    return resolver.promise;
+  }
+  async #cancelAllRequests() {
+    if (!this.#requestResolvers) {
+      return;
+    }
+    for (const resolver of this.#requestResolvers) {
+      resolver.resolve({
+        cancel: true
+      });
+    }
+    this.#requestResolvers.clear();
+    this.#requestResolvers = null;
+  }
+  async toggleService(name, enabled) {
+    if (name !== "altText" || this.enableGuessAltText === enabled) {
+      return;
+    }
+    this.enableGuessAltText = enabled;
+    if (enabled) {
+      if (this.enableAltTextModelDownload) {
+        await this.#loadAltTextEngine(false);
+      }
+    } else {
+      this.#cancelAllRequests();
+    }
+  }
+  async #loadAltTextEngine(listenToProgress) {
+    if (this.#enabled?.has("altText")) {
+      return;
+    }
+    this.#ready ||= new Set();
+    const promise = FirefoxCom.requestAsync("loadAIEngine", {
+      service: MLManager.#AI_ALT_TEXT_MODEL_NAME,
+      listenToProgress
+    }).then(ok => {
+      if (ok) {
+        this.#ready.add("altText");
+      }
+      return ok;
+    });
+    (this.#enabled ||= new Map()).set("altText", promise);
+    if (listenToProgress) {
+      const ac = new AbortController();
+      const signal = AbortSignal.any([this.#abortSignal, ac.signal]);
+      this.hasProgress = true;
+      window.addEventListener("loadAIEngineProgress", ({
+        detail
+      }) => {
+        this.#eventBus.dispatch("loadaiengineprogress", {
+          source: this,
+          detail
+        });
+        if (detail.finished) {
+          ac.abort();
+          this.hasProgress = false;
+        }
+      }, {
+        signal
+      });
+      promise.then(ok => {
+        if (!ok) {
+          ac.abort();
+          this.hasProgress = false;
+        }
+      });
+    }
+    await promise;
+  }
+}
+class SignatureStorage {
+  #eventBus = null;
+  #signatures = null;
+  #signal = null;
+  constructor(eventBus, signal) {
+    this.#eventBus = eventBus;
+    this.#signal = signal;
+  }
+  #handleSignature(data) {
+    return FirefoxCom.requestAsync("handleSignature", data);
+  }
+  async getAll() {
+    if (this.#signal) {
+      window.addEventListener("storedSignaturesChanged", () => {
+        this.#signatures = null;
+        this.#eventBus?.dispatch("storedsignatureschanged", {
+          source: this
+        });
+      }, {
+        signal: this.#signal
+      });
+      this.#signal = null;
+    }
+    if (!this.#signatures) {
+      this.#signatures = new Map();
+      const data = await this.#handleSignature({
+        action: "get"
+      });
+      if (data) {
+        for (const {
+          uuid,
+          description,
+          signatureData
+        } of data) {
+          this.#signatures.set(uuid, {
+            description,
+            signatureData
+          });
+        }
+      }
+    }
+    return this.#signatures;
+  }
+  async isFull() {
+    return (await this.size()) === 5;
+  }
+  async size() {
+    return (await this.getAll()).size;
+  }
+  async create(data) {
+    if (await this.isFull()) {
+      return null;
+    }
+    const uuid = await this.#handleSignature({
+      action: "create",
+      ...data
+    });
+    if (!uuid) {
+      return null;
+    }
+    this.#signatures.set(uuid, data);
+    return uuid;
+  }
+  async delete(uuid) {
+    const signatures = await this.getAll();
+    if (!signatures.has(uuid)) {
+      return false;
+    }
+    if (await this.#handleSignature({
+      action: "delete",
+      uuid
+    })) {
+      signatures.delete(uuid);
+      return true;
+    }
+    return false;
+  }
+}
+const NSS_ERR_CODES = {
+  EXPIRED: new Set(["SEC_ERROR_EXPIRED_CERTIFICATE", "SEC_ERROR_EXPIRED_ISSUER_CERTIFICATE", "MOZILLA_PKIX_ERROR_NOT_YET_VALID_CERTIFICATE", "MOZILLA_PKIX_ERROR_NOT_YET_VALID_ISSUER_CERTIFICATE"]),
+  REVOKED: new Set(["SEC_ERROR_REVOKED_CERTIFICATE", "SEC_ERROR_REVOKED_KEY", "MOZILLA_PKIX_ERROR_REVOKED_CERTIFICATE"]),
+  UNTRUSTED: new Set(["SEC_ERROR_UNKNOWN_ISSUER", "SEC_ERROR_UNTRUSTED_CERT", "SEC_ERROR_UNTRUSTED_ISSUER", "MOZILLA_PKIX_ERROR_SELF_SIGNED_CERT", "MOZILLA_PKIX_ERROR_ADDITIONAL_POLICY_CONSTRAINT_FAILED"]),
+  CMS_NOT_YET_ATTEMPTED: "NS_ERROR_CMS_VERIFY_NOT_YET_ATTEMPTED"
+};
+function mapVerificationStatus(signatureCode, certificateCode) {
+  if (signatureCode === NSS_ERR_CODES.CMS_NOT_YET_ATTEMPTED) {
+    return {
+      status: "unknown",
+      errorCode: signatureCode
+    };
+  }
+  if (signatureCode && signatureCode !== "NS_OK") {
+    return {
+      status: "invalid",
+      errorCode: signatureCode
+    };
+  }
+  if (!certificateCode || certificateCode === "NS_OK") {
+    return {
+      status: "verified",
+      errorCode: null
+    };
+  }
+  if (NSS_ERR_CODES.REVOKED.has(certificateCode)) {
+    return {
+      status: "revoked",
+      errorCode: certificateCode
+    };
+  }
+  if (NSS_ERR_CODES.EXPIRED.has(certificateCode)) {
+    return {
+      status: "expired",
+      errorCode: certificateCode
+    };
+  }
+  return NSS_ERR_CODES.UNTRUSTED.has(certificateCode) ? {
+    status: "untrusted",
+    errorCode: certificateCode
+  } : {
+    status: "untrusted",
+    errorCode: certificateCode
+  };
+}
+class SignatureVerifier {
+  async verify(signature) {
+    if (signature.signatureType === null) {
+      return {
+        status: "unknown",
+        errorCode: "SUBFILTER_NOT_SUPPORTED",
+        message: signature.subFilter,
+        certificate: null,
+        documentModifiedAfterSigning: !signature.coversWholeDocument,
+        modificationsAfterSignature: signature.modificationsAfterSignature
+      };
+    }
+    let response;
+    try {
+      response = await FirefoxCom.requestAsync("verifyPdfSignature", {
+        pkcs7: signature.pkcs7,
+        data: signature.data,
+        signatureType: signature.signatureType
+      });
+    } catch (ex) {
+      return {
+        status: "unknown",
+        errorCode: "BRIDGE_ERROR",
+        message: ex?.message ?? null,
+        certificate: null,
+        documentModifiedAfterSigning: !signature.coversWholeDocument,
+        modificationsAfterSignature: signature.modificationsAfterSignature
+      };
+    }
+    if (!response || response.error) {
+      return {
+        status: "unknown",
+        errorCode: response?.error ?? "EMPTY_RESPONSE",
+        message: null,
+        certificate: null,
+        documentModifiedAfterSigning: !signature.coversWholeDocument,
+        modificationsAfterSignature: signature.modificationsAfterSignature
+      };
+    }
+    const entry = Array.isArray(response) ? response[0] : response;
+    if (!entry) {
+      return {
+        status: "unknown",
+        errorCode: "EMPTY_RESPONSE",
+        message: null,
+        certificate: null,
+        documentModifiedAfterSigning: !signature.coversWholeDocument,
+        modificationsAfterSignature: signature.modificationsAfterSignature
+      };
+    }
+    const {
+      status,
+      errorCode
+    } = mapVerificationStatus(entry.signatureResult, entry.certificateResult);
+    return {
+      status,
+      errorCode,
+      message: entry.message ?? null,
+      certificate: entry.certificate ?? null,
+      documentModifiedAfterSigning: !signature.coversWholeDocument,
+      modificationsAfterSignature: signature.modificationsAfterSignature
+    };
+  }
+  async viewCertificate(certificate) {
+    if (!certificate) {
+      return false;
+    }
+    const certs = Array.isArray(certificate.chain) && certificate.chain.length ? certificate.chain.map(c => c.derBase64).filter(Boolean) : [certificate.derBase64].filter(Boolean);
+    if (certs.length === 0) {
+      return false;
+    }
+    try {
+      return await FirefoxCom.requestAsync("viewPdfCertificate", {
+        certs
+      });
+    } catch {
+      return false;
+    }
+  }
+}
+class ExternalServices extends BaseExternalServices {
+  printToPDF = async data => {
+    const buffer = await FirefoxCom.requestAsync("printToPDF", data, getPrintToPDFTimeout(data.length));
+    return buffer ? new Uint8Array(buffer) : null;
+  };
+  updateFindControlState(data) {
     FirefoxCom.request("updateFindControlState", data);
   }
-
-  static updateFindMatchesCount(data) {
+  updateFindMatchesCount(data) {
     FirefoxCom.request("updateFindMatchesCount", data);
   }
-
-  static initPassiveLoading(callbacks) {
+  initPassiveLoading() {
     let pdfDataRangeTransport;
     window.addEventListener("message", function windowMessage(e) {
       if (e.source !== null) {
         console.warn("Rejected untrusted message from " + e.origin);
         return;
       }
-
       const args = e.data;
-
       if (typeof args !== "object" || !("pdfjsLoadAction" in args)) {
         return;
       }
-
       switch (args.pdfjsLoadAction) {
         case "supportsRangedLoading":
-          pdfDataRangeTransport = new FirefoxComDataRangeTransport(args.length, args.data, args.done);
-          callbacks.onOpenWithTransport(args.pdfUrl, args.length, pdfDataRangeTransport);
+          if (args.done && !args.data) {
+            viewerApp._documentError(null);
+            break;
+          }
+          pdfDataRangeTransport = new FirefoxComDataRangeTransport(args.length, args.data, args.done, args.filename);
+          viewerApp.open({
+            range: pdfDataRangeTransport
+          });
           break;
-
         case "range":
           pdfDataRangeTransport.onDataRange(args.begin, args.chunk);
           break;
-
-        case "rangeProgress":
-          pdfDataRangeTransport.onDataProgress(args.loaded);
-          break;
-
         case "progressiveRead":
           pdfDataRangeTransport.onDataProgressiveRead(args.chunk);
-          pdfDataRangeTransport.onDataProgress(args.loaded, args.total);
           break;
-
         case "progressiveDone":
-          if (pdfDataRangeTransport) {
-            pdfDataRangeTransport.onDataProgressiveDone();
-          }
-
+          pdfDataRangeTransport?.onDataProgressiveDone();
           break;
-
         case "progress":
-          callbacks.onProgress(args.loaded, args.total);
+          const percent = args.total ? MathClamp(Math.round(args.loaded / args.total * 100), 0, 100) : NaN;
+          viewerApp.progress(percent);
           break;
-
         case "complete":
           if (!args.data) {
-            callbacks.onError(args.errorCode);
+            viewerApp._documentError(null, {
+              message: args.errorCode
+            });
             break;
           }
-
-          callbacks.onOpenWithData(args.data);
+          viewerApp.open({
+            data: args.data,
+            filename: args.filename
+          });
           break;
       }
     });
-    FirefoxCom.requestSync("initPassiveLoading", null);
+    FirefoxCom.request("initPassiveLoading", null);
   }
-
-  static fallback(data, callback) {
-    FirefoxCom.request("fallback", data, callback);
+  reportTelemetry(data) {
+    FirefoxCom.request("reportTelemetry", data);
   }
-
-  static reportTelemetry(data) {
-    FirefoxCom.request("reportTelemetry", JSON.stringify(data));
+  reportText(data) {
+    FirefoxCom.request("reportText", data);
   }
-
-  static createDownloadManager(options) {
-    return new DownloadManager(options);
+  updateEditorStates(data) {
+    FirefoxCom.request("updateEditorStates", data);
   }
-
-  static createPreferences() {
-    return new FirefoxPreferences();
+  async createL10n() {
+    try {
+      await document.l10n.ready;
+    } catch (ex) {
+      console.error(`createL10n: "${ex}".`);
+    }
+    return new L10n(AppOptions.get("localeProperties"), document.l10n);
   }
-
-  static createL10n(options) {
-    const mozL10n = document.mozL10n;
-    return new MozL10n(mozL10n);
+  createScripting() {
+    return FirefoxScripting;
   }
-
-  static get supportsIntegratedFind() {
-    const support = FirefoxCom.requestSync("supportsIntegratedFind");
-    return (0, _pdf.shadow)(this, "supportsIntegratedFind", support);
+  createSignatureStorage(eventBus, signal) {
+    return new SignatureStorage(eventBus, signal);
   }
-
-  static get supportsDocumentFonts() {
-    const support = FirefoxCom.requestSync("supportsDocumentFonts");
-    return (0, _pdf.shadow)(this, "supportsDocumentFonts", support);
+  createSignatureVerifier() {
+    return new SignatureVerifier();
   }
-
-  static get supportedMouseWheelZoomModifierKeys() {
-    const support = FirefoxCom.requestSync("supportedMouseWheelZoomModifierKeys");
-    return (0, _pdf.shadow)(this, "supportedMouseWheelZoomModifierKeys", support);
+  dispatchGlobalEvent(event) {
+    FirefoxCom.request("dispatchGlobalEvent", event);
   }
-
+  openAboutPdfFeatures() {
+    FirefoxCom.request("openAboutPdfFeatures", null);
+  }
 }
-
-_app.PDFViewerApplication.externalServices = FirefoxExternalServices;
-document.mozL10n.setExternalLocalizerServices({
-  getLocale() {
-    return FirefoxCom.requestSync("getLocale", null);
-  },
-
-  getStrings(key) {
-    return FirefoxCom.requestSync("getStrings", key);
-  }
-
-});
+export { DownloadManager, ExternalServices, initCom, MLManager, Preferences };

@@ -1,8 +1,4 @@
-/**
- * @licstart The following is the entire license notice for the
- * Javascript code in this page
- *
- * Copyright 2020 Mozilla Foundation
+/* Copyright 2024 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,499 +11,470 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
- * @licend The above is the entire license notice for the
- * Javascript code in this page
  */
-"use strict";
-
-Object.defineProperty(exports, "__esModule", {
-  value: true
-});
-exports.getDocument = getDocument;
-exports.setPDFNetworkStreamFactory = setPDFNetworkStreamFactory;
-exports.build = exports.version = exports.PDFPageProxy = exports.PDFDocumentProxy = exports.PDFWorker = exports.PDFDataRangeTransport = exports.LoopbackPort = void 0;
-
-var _util = require("../shared/util.js");
-
-var _display_utils = require("./display_utils.js");
-
-var _font_loader = require("./font_loader.js");
-
-var _api_compatibility = require("./api_compatibility.js");
-
-var _canvas = require("./canvas.js");
-
-var _worker_options = require("./worker_options.js");
-
-var _is_node = require("../shared/is_node.js");
-
-var _message_handler = require("../shared/message_handler.js");
-
-var _metadata = require("./metadata.js");
-
-var _transport_stream = require("./transport_stream.js");
-
-var _webgl = require("./webgl.js");
-
-const DEFAULT_RANGE_CHUNK_SIZE = 65536;
+import "core-js/modules/es.array.push.js";
+import "core-js/modules/es.iterator.constructor.js";
+import "core-js/modules/es.iterator.map.js";
+import "core-js/modules/es.iterator.take.js";
+import "core-js/modules/es.map.get-or-insert.js";
+import "core-js/modules/es.map.get-or-insert-computed.js";
+import "core-js/modules/es.set.difference.v2.js";
+import "core-js/modules/es.set.intersection.v2.js";
+import "core-js/modules/es.set.is-disjoint-from.v2.js";
+import "core-js/modules/es.set.is-subset-of.v2.js";
+import "core-js/modules/es.set.is-superset-of.v2.js";
+import "core-js/modules/es.set.symmetric-difference.v2.js";
+import "core-js/modules/es.set.union.v2.js";
+import "core-js/modules/es.typed-array.with.js";
+import "core-js/modules/es.uint8-array.set-from-base64.js";
+import "core-js/modules/es.uint8-array.set-from-hex.js";
+import "core-js/modules/es.uint8-array.to-base64.js";
+import "core-js/modules/es.uint8-array.to-hex.js";
+import "core-js/modules/es.weak-map.get-or-insert.js";
+import "core-js/modules/es.weak-map.get-or-insert-computed.js";
+import { AbortException, AnnotationMode, assert, getVerbosityLevel, info, isNodeJS, makeObj, RenderingIntentFlag, setVerbosityLevel, shadow, unreachable, warn } from "../shared/util.js";
+import { AnnotationStorage, PrintAnnotationStorage, SerializableEmpty } from "./annotation_storage.js";
+import { getDataProp, getFactoryUrlProp, getUrlProp, getWorkerSrc, isRefProxy, LoopbackPort, StatTimer } from "./api_utils.js";
+import { initGPU, isGPUReady } from "./webgpu.js";
+import { isDataScheme, isValidFetchUrl } from "./dom_utils.js";
+import { MessageHandler, wrapReason } from "../shared/message_handler.js";
+import { NodeBinaryDataFactory, NodeCanvasFactory, NodeFilterFactory } from "./node_utils.js";
+import { CanvasGraphics } from "./canvas.js";
+import { createCanvasTrackers } from "./canvas_dependency_tracker.js";
+import { DOMBinaryDataFactory } from "./binary_data_factory.js";
+import { DOMCanvasFactory } from "./dom_canvas_factory.js";
+import { DOMFilterFactory } from "./dom_filter_factory.js";
+import { FontLoader } from "./font_loader.js";
+import { getNetworkStream } from "./network_stream.js";
+import { GlobalWorkerOptions } from "./worker_options.js";
+import { MathClamp } from "../shared/math_clamp.js";
+import { Metadata } from "./metadata.js";
+import { ObjectHandler } from "./object_handler.js";
+import { OptionalContentConfig } from "./optional_content_config.js";
+import { PagesMapper } from "./pages_mapper.js";
+import { PageViewport } from "./page_viewport.js";
+import { PDFDataTransportStream } from "./transport_stream.js";
+import { PDFObjects } from "./pdf_objects.js";
+import { RendererWorker } from "./renderer_worker_proxy.js";
+import { RenderingCancelledException } from "./display_utils.js";
+import { TextLayer } from "./text_layer.js";
+import { XfaText } from "./xfa_text.js";
 const RENDERING_CANCELLED_TIMEOUT = 100;
-let createPDFNetworkStream;
-
-function setPDFNetworkStreamFactory(pdfNetworkStreamFactory) {
-  createPDFNetworkStream = pdfNetworkStreamFactory;
-}
-
-function getDocument(src) {
+function getDocument(src = {}) {
   const task = new PDFDocumentLoadingTask();
-  let source;
-
-  if (typeof src === "string") {
-    source = {
-      url: src
-    };
-  } else if ((0, _util.isArrayBuffer)(src)) {
-    source = {
-      data: src
-    };
-  } else if (src instanceof PDFDataRangeTransport) {
-    source = {
-      range: src
-    };
-  } else {
-    if (typeof src !== "object") {
-      throw new Error("Invalid parameter in getDocument, " + "need either Uint8Array, string or a parameter object");
-    }
-
-    if (!src.url && !src.data && !src.range) {
-      throw new Error("Invalid parameter object: need either .data, .range or .url");
-    }
-
-    source = src;
+  const {
+    docId
+  } = task;
+  const url = src.url ? getUrlProp(src.url) : null;
+  const data = src.data ? getDataProp(src.data) : null;
+  const httpHeaders = src.httpHeaders || null;
+  const withCredentials = src.withCredentials === true;
+  const password = src.password ?? null;
+  const rangeTransport = src.range instanceof PDFDataRangeTransport ? src.range : null;
+  const rangeChunkSize = Number.isInteger(src.rangeChunkSize) && src.rangeChunkSize > 0 ? src.rangeChunkSize : 2 ** 16;
+  let worker = src.worker instanceof PDFWorker ? src.worker : null;
+  const verbosity = src.verbosity;
+  const docBaseUrl = typeof src.docBaseUrl === "string" && !isDataScheme(src.docBaseUrl) ? src.docBaseUrl : null;
+  const cMapUrl = getFactoryUrlProp(src.cMapUrl);
+  const cMapPacked = src.cMapPacked !== false;
+  const iccUrl = getFactoryUrlProp(src.iccUrl);
+  const standardFontDataUrl = getFactoryUrlProp(src.standardFontDataUrl);
+  const wasmUrl = getFactoryUrlProp(src.wasmUrl);
+  const ignoreErrors = src.stopAtErrors !== true;
+  const maxImageSize = Number.isInteger(src.maxImageSize) && src.maxImageSize > -1 ? src.maxImageSize : -1;
+  const isOffscreenCanvasSupported = typeof src.isOffscreenCanvasSupported === "boolean" ? src.isOffscreenCanvasSupported : !isNodeJS;
+  const isImageDecoderSupported = typeof src.isImageDecoderSupported === "boolean" ? src.isImageDecoderSupported : !isNodeJS;
+  const canvasMaxAreaInBytes = Number.isInteger(src.canvasMaxAreaInBytes) ? src.canvasMaxAreaInBytes : -1;
+  const disableFontFace = typeof src.disableFontFace === "boolean" ? src.disableFontFace : isNodeJS;
+  const fontExtraProperties = src.fontExtraProperties === true;
+  const enableXfa = src.enableXfa === true;
+  const ownerDocument = src.ownerDocument || globalThis.document;
+  const disableRange = src.disableRange === true;
+  const disableStream = src.disableStream === true;
+  const disableAutoFetch = src.disableAutoFetch === true;
+  const pdfBug = src.pdfBug === true;
+  const CanvasFactory = src.CanvasFactory || (isNodeJS ? NodeCanvasFactory : DOMCanvasFactory);
+  const FilterFactory = src.FilterFactory || (isNodeJS ? NodeFilterFactory : DOMFilterFactory);
+  const BinaryDataFactory = src.BinaryDataFactory || (isNodeJS ? NodeBinaryDataFactory : DOMBinaryDataFactory);
+  const enableHWA = src.enableHWA === true;
+  const enableWebGPU = src.enableWebGPU === true;
+  if (enableWebGPU) {
+    initGPU();
   }
-
-  const params = Object.create(null);
-  let rangeTransport = null,
-      worker = null;
-
-  for (const key in source) {
-    if (key === "url" && typeof window !== "undefined") {
-      params[key] = new URL(source[key], window.location).href;
-      continue;
-    } else if (key === "range") {
-      rangeTransport = source[key];
-      continue;
-    } else if (key === "worker") {
-      worker = source[key];
-      continue;
-    } else if (key === "data" && !(source[key] instanceof Uint8Array)) {
-      const pdfBytes = source[key];
-
-      if (typeof pdfBytes === "string") {
-        params[key] = (0, _util.stringToBytes)(pdfBytes);
-      } else if (typeof pdfBytes === "object" && pdfBytes !== null && !isNaN(pdfBytes.length)) {
-        params[key] = new Uint8Array(pdfBytes);
-      } else if ((0, _util.isArrayBuffer)(pdfBytes)) {
-        params[key] = new Uint8Array(pdfBytes);
-      } else {
-        throw new Error("Invalid PDF binary data: either typed array, " + "string or array-like object is expected in the " + "data property.");
-      }
-
-      continue;
-    }
-
-    params[key] = source[key];
-  }
-
-  params.rangeChunkSize = params.rangeChunkSize || DEFAULT_RANGE_CHUNK_SIZE;
-  params.CMapReaderFactory = params.CMapReaderFactory || _display_utils.DOMCMapReaderFactory;
-  params.ignoreErrors = params.stopAtErrors !== true;
-  params.pdfBug = params.pdfBug === true;
-  const NativeImageDecoderValues = Object.values(_util.NativeImageDecoding);
-
-  if (params.nativeImageDecoderSupport === undefined || !NativeImageDecoderValues.includes(params.nativeImageDecoderSupport)) {
-    params.nativeImageDecoderSupport = _api_compatibility.apiCompatibilityParams.nativeImageDecoderSupport || _util.NativeImageDecoding.DECODE;
-  }
-
-  if (!Number.isInteger(params.maxImageSize)) {
-    params.maxImageSize = -1;
-  }
-
-  if (typeof params.isEvalSupported !== "boolean") {
-    params.isEvalSupported = true;
-  }
-
-  if (typeof params.disableFontFace !== "boolean") {
-    params.disableFontFace = _api_compatibility.apiCompatibilityParams.disableFontFace || false;
-  }
-
-  if (typeof params.disableRange !== "boolean") {
-    params.disableRange = false;
-  }
-
-  if (typeof params.disableStream !== "boolean") {
-    params.disableStream = false;
-  }
-
-  if (typeof params.disableAutoFetch !== "boolean") {
-    params.disableAutoFetch = false;
-  }
-
-  if (typeof params.disableCreateObjectURL !== "boolean") {
-    params.disableCreateObjectURL = _api_compatibility.apiCompatibilityParams.disableCreateObjectURL || false;
-  }
-
-  (0, _util.setVerbosityLevel)(params.verbosity);
-
+  const useWasm = src.useWasm !== false;
+  const pagesMapper = src.pagesMapper || new PagesMapper();
+  const styleElement = null;
+  const useSystemFonts = typeof src.useSystemFonts === "boolean" ? src.useSystemFonts : !isNodeJS && !disableFontFace;
+  const useWorkerFetch = typeof src.useWorkerFetch === "boolean" ? src.useWorkerFetch : !!(BinaryDataFactory === DOMBinaryDataFactory && cMapUrl && cMapPacked && standardFontDataUrl && wasmUrl && isValidFetchUrl(cMapUrl, document.baseURI) && isValidFetchUrl(standardFontDataUrl, document.baseURI) && isValidFetchUrl(wasmUrl, document.baseURI));
+  const disableWorkerRendering = src.disableWorkerRendering === true || !isOffscreenCanvasSupported || ownerDocument !== globalThis.document || !!styleElement || !RendererWorker.isAvailable;
+  setVerbosityLevel(verbosity);
+  const transportFactory = {
+    canvasFactory: new CanvasFactory({
+      ownerDocument,
+      enableHWA
+    }),
+    filterFactory: new FilterFactory({
+      docId,
+      ownerDocument
+    }),
+    binaryDataFactory: useWorkerFetch ? null : new BinaryDataFactory({
+      cMapUrl,
+      standardFontDataUrl,
+      wasmUrl
+    })
+  };
   if (!worker) {
-    const workerParams = {
-      verbosity: params.verbosity,
-      port: _worker_options.GlobalWorkerOptions.workerPort
-    };
-    worker = workerParams.port ? PDFWorker.fromPort(workerParams) : new PDFWorker(workerParams);
+    worker = PDFWorker.create({
+      verbosity,
+      port: GlobalWorkerOptions.workerPort
+    });
     task._worker = worker;
   }
-
-  const docId = task.docId;
-  worker.promise.then(function () {
-    if (task.destroyed) {
-      throw new Error("Loading aborted");
-    }
-
-    return _fetchDocument(worker, params, rangeTransport, docId).then(function (workerId) {
-      if (task.destroyed) {
-        throw new Error("Loading aborted");
-      }
-
-      let networkStream;
-
-      if (rangeTransport) {
-        networkStream = new _transport_stream.PDFDataTransportStream({
-          length: params.length,
-          initialData: params.initialData,
-          progressiveDone: params.progressiveDone,
-          disableRange: params.disableRange,
-          disableStream: params.disableStream
-        }, rangeTransport);
-      } else if (!params.data) {
-        networkStream = createPDFNetworkStream({
-          url: params.url,
-          length: params.length,
-          httpHeaders: params.httpHeaders,
-          withCredentials: params.withCredentials,
-          rangeChunkSize: params.rangeChunkSize,
-          disableRange: params.disableRange,
-          disableStream: params.disableStream
-        });
-      }
-
-      const messageHandler = new _message_handler.MessageHandler(docId, workerId, worker.port);
-      messageHandler.postMessageTransfers = worker.postMessageTransfers;
-      const transport = new WorkerTransport(messageHandler, task, networkStream, params);
-      task._transport = transport;
-      messageHandler.send("Ready", null);
+  if (!disableWorkerRendering) {
+    const rendererWorker = RendererWorker.create({
+      verbosity,
+      enableHWA,
+      enableWebGPU,
+      ports: GlobalWorkerOptions.rendererPorts
     });
-  }).catch(task._capability.reject);
-  return task;
-}
-
-function _fetchDocument(worker, source, pdfDataRangeTransport, docId) {
-  if (worker.destroyed) {
-    return Promise.reject(new Error("Worker was destroyed"));
+    rendererWorker.promise.catch(reason => {
+      if (!rendererWorker.destroyed) {
+        warn(`Renderer worker disabled: ${reason.message}`);
+        rendererWorker.destroy();
+      }
+    });
+    task._rendererWorker = rendererWorker;
   }
-
-  if (pdfDataRangeTransport) {
-    source.length = pdfDataRangeTransport.length;
-    source.initialData = pdfDataRangeTransport.initialData;
-    source.progressiveDone = pdfDataRangeTransport.progressiveDone;
-  }
-
-  return worker.messageHandler.sendWithPromise("GetDocRequest", {
+  const docParams = {
     docId,
-    apiVersion: '2.4.456',
-    source: {
-      data: source.data,
-      url: source.url,
-      password: source.password,
-      disableAutoFetch: source.disableAutoFetch,
-      rangeChunkSize: source.rangeChunkSize,
-      length: source.length
-    },
-    maxImageSize: source.maxImageSize,
-    disableFontFace: source.disableFontFace,
-    disableCreateObjectURL: source.disableCreateObjectURL,
-    postMessageTransfers: worker.postMessageTransfers,
-    docBaseUrl: source.docBaseUrl,
-    nativeImageDecoderSupport: source.nativeImageDecoderSupport,
-    ignoreErrors: source.ignoreErrors,
-    isEvalSupported: source.isEvalSupported
-  }).then(function (workerId) {
+    apiVersion: "6.5.0",
+    data,
+    password,
+    disableAutoFetch,
+    rangeChunkSize,
+    docBaseUrl,
+    enableXfa,
+    evaluatorOptions: {
+      maxImageSize,
+      disableFontFace,
+      ignoreErrors,
+      isOffscreenCanvasSupported,
+      isImageDecoderSupported,
+      canvasMaxAreaInBytes,
+      fontExtraProperties,
+      useSystemFonts,
+      useWasm,
+      useWorkerFetch,
+      cMapUrl,
+      cMapPacked,
+      iccUrl,
+      standardFontDataUrl,
+      wasmUrl
+    }
+  };
+  const transportParams = {
+    ownerDocument,
+    pdfBug,
+    styleElement,
+    rendererWorker: task._rendererWorker,
+    enableWebGPU,
+    loadingParams: {
+      disableAutoFetch,
+      enableXfa
+    }
+  };
+  worker.promise.then(function () {
     if (worker.destroyed) {
       throw new Error("Worker was destroyed");
     }
-
-    return workerId;
-  });
-}
-
-const PDFDocumentLoadingTask = function PDFDocumentLoadingTaskClosure() {
-  let nextDocumentId = 0;
-
-  class PDFDocumentLoadingTask {
-    constructor() {
-      this._capability = (0, _util.createPromiseCapability)();
-      this._transport = null;
-      this._worker = null;
-      this.docId = "d" + nextDocumentId++;
-      this.destroyed = false;
-      this.onPassword = null;
-      this.onProgress = null;
-      this.onUnsupportedFeature = null;
-    }
-
-    get promise() {
-      return this._capability.promise;
-    }
-
-    destroy() {
-      this.destroyed = true;
-      const transportDestroyed = !this._transport ? Promise.resolve() : this._transport.destroy();
-      return transportDestroyed.then(() => {
-        this._transport = null;
-
-        if (this._worker) {
-          this._worker.destroy();
-
-          this._worker = null;
-        }
+    const workerIdPromise = worker.messageHandler.sendWithPromise("GetDocRequest", docParams, data ? [data.buffer] : null);
+    let networkStream;
+    if (data) {} else if (rangeTransport) {
+      networkStream = new PDFDataTransportStream({
+        pdfDataRangeTransport: rangeTransport,
+        disableRange,
+        disableStream
       });
+    } else if (url) {
+      const NetworkStream = getNetworkStream(url);
+      networkStream = new NetworkStream({
+        url,
+        httpHeaders,
+        withCredentials,
+        rangeChunkSize,
+        disableRange,
+        disableStream
+      });
+    } else {
+      throw new Error("getDocument - expected either `data`, `range`, or `url` parameter.");
     }
-
-    then(onFulfilled, onRejected) {
-      throw new Error("Removed API method: " + "PDFDocumentLoadingTask.then, use the `promise` getter instead.");
-    }
-
+    return workerIdPromise.then(workerId => {
+      if (worker.destroyed) {
+        throw new Error("Worker was destroyed");
+      }
+      const messageHandler = new MessageHandler(docId, workerId, worker.port);
+      const transport = new WorkerTransport(messageHandler, task, networkStream, transportParams, transportFactory, pagesMapper);
+      task._transport = transport;
+      if (task.destroyed) {
+        throw new Error("Loading aborted");
+      }
+      messageHandler.send("Ready", null);
+    });
+  }).catch(task._capability.reject).finally(task._setupCapability.resolve);
+  return task;
+}
+class PDFDocumentLoadingTask {
+  static #docId = 0;
+  _capability = Promise.withResolvers();
+  _setupCapability = Promise.withResolvers();
+  _transport = null;
+  _worker = null;
+  _rendererWorker = null;
+  docId = `d${PDFDocumentLoadingTask.#docId++}`;
+  destroyed = false;
+  onPassword = null;
+  onProgress = null;
+  get promise() {
+    return this._capability.promise;
   }
-
-  return PDFDocumentLoadingTask;
-}();
-
+  async destroy() {
+    this.destroyed = true;
+    this._capability.promise.catch(() => {});
+    try {
+      if (this._worker?.port) {
+        this._worker._pendingDestroy = true;
+      }
+      await this._setupCapability.promise;
+      await this._transport?.destroy();
+    } catch (ex) {
+      if (this._worker?.port) {
+        delete this._worker._pendingDestroy;
+      }
+      throw ex;
+    } finally {
+      this._rendererWorker?.destroy();
+      this._rendererWorker = null;
+    }
+    this._transport = null;
+    this._worker?.destroy();
+    this._worker = null;
+  }
+  async getData() {
+    return this._transport.getData();
+  }
+}
 class PDFDataRangeTransport {
-  constructor(length, initialData, progressiveDone = false) {
+  #capability = Promise.withResolvers();
+  #listener = null;
+  constructor(length, initialData, progressiveDone = false, contentDispositionFilename = null) {
     this.length = length;
     this.initialData = initialData;
     this.progressiveDone = progressiveDone;
-    this._rangeListeners = [];
-    this._progressListeners = [];
-    this._progressiveReadListeners = [];
-    this._progressiveDoneListeners = [];
-    this._readyCapability = (0, _util.createPromiseCapability)();
+    this.contentDispositionFilename = contentDispositionFilename;
   }
-
-  addRangeListener(listener) {
-    this._rangeListeners.push(listener);
-  }
-
-  addProgressListener(listener) {
-    this._progressListeners.push(listener);
-  }
-
-  addProgressiveReadListener(listener) {
-    this._progressiveReadListeners.push(listener);
-  }
-
-  addProgressiveDoneListener(listener) {
-    this._progressiveDoneListeners.push(listener);
-  }
-
   onDataRange(begin, chunk) {
-    for (const listener of this._rangeListeners) {
-      listener(begin, chunk);
-    }
-  }
-
-  onDataProgress(loaded, total) {
-    this._readyCapability.promise.then(() => {
-      for (const listener of this._progressListeners) {
-        listener(loaded, total);
-      }
+    this.#listener({
+      type: "range",
+      begin,
+      chunk
     });
   }
-
   onDataProgressiveRead(chunk) {
-    this._readyCapability.promise.then(() => {
-      for (const listener of this._progressiveReadListeners) {
-        listener(chunk);
-      }
+    this.#capability.promise.then(() => {
+      this.#listener({
+        type: "progressiveRead",
+        chunk
+      });
     });
   }
-
   onDataProgressiveDone() {
-    this._readyCapability.promise.then(() => {
-      for (const listener of this._progressiveDoneListeners) {
-        listener();
-      }
+    this.#capability.promise.then(() => {
+      this.#listener({
+        type: "progressiveDone"
+      });
     });
   }
-
-  transportReady() {
-    this._readyCapability.resolve();
+  transportReady(listener) {
+    this.#listener = listener;
+    this.#capability.resolve();
   }
-
   requestDataRange(begin, end) {
-    (0, _util.unreachable)("Abstract method PDFDataRangeTransport.requestDataRange");
+    unreachable("Abstract method PDFDataRangeTransport.requestDataRange");
   }
-
   abort() {}
-
 }
-
-exports.PDFDataRangeTransport = PDFDataRangeTransport;
-
 class PDFDocumentProxy {
   constructor(pdfInfo, transport) {
     this._pdfInfo = pdfInfo;
     this._transport = transport;
   }
-
+  get pagesMapper() {
+    return this._transport.pagesMapper;
+  }
+  get annotationStorage() {
+    return this._transport.annotationStorage;
+  }
+  get canvasFactory() {
+    return this._transport.canvasFactory;
+  }
+  get filterFactory() {
+    return this._transport.filterFactory;
+  }
   get numPages() {
     return this._pdfInfo.numPages;
   }
-
-  get fingerprint() {
-    return this._pdfInfo.fingerprint;
+  get fingerprints() {
+    return this._pdfInfo.fingerprints;
   }
-
+  get isPureXfa() {
+    return shadow(this, "isPureXfa", !!this._transport._htmlForXfa);
+  }
+  get allXfaHtml() {
+    return this._transport._htmlForXfa;
+  }
   getPage(pageNumber) {
     return this._transport.getPage(pageNumber);
   }
-
   getPageIndex(ref) {
     return this._transport.getPageIndex(ref);
   }
-
   getDestinations() {
     return this._transport.getDestinations();
   }
-
   getDestination(id) {
     return this._transport.getDestination(id);
   }
-
   getPageLabels() {
     return this._transport.getPageLabels();
   }
-
   getPageLayout() {
     return this._transport.getPageLayout();
   }
-
   getPageMode() {
     return this._transport.getPageMode();
   }
-
   getViewerPreferences() {
     return this._transport.getViewerPreferences();
   }
-
   getOpenAction() {
     return this._transport.getOpenAction();
   }
-
-  getOpenActionDestination() {
-    (0, _display_utils.deprecated)("getOpenActionDestination, use getOpenAction instead.");
-    return this.getOpenAction().then(function (openAction) {
-      return openAction && openAction.dest ? openAction.dest : null;
-    });
-  }
-
   getAttachments() {
     return this._transport.getAttachments();
   }
-
-  getJavaScript() {
-    return this._transport.getJavaScript();
+  getAttachmentContent(id) {
+    return this._transport.getAttachmentContent(id);
   }
-
+  getAnnotationsByType(types, pageIndexesToSkip) {
+    return this._transport.getAnnotationsByType(types, pageIndexesToSkip);
+  }
+  getJSActions() {
+    return this._transport.getDocJSActions();
+  }
   getOutline() {
     return this._transport.getOutline();
   }
-
+  getOptionalContentConfig({
+    intent = "display"
+  } = {}) {
+    const {
+      renderingIntent
+    } = this._transport.getRenderingIntent(intent);
+    return this._transport.getOptionalContentConfig(renderingIntent);
+  }
   getPermissions() {
     return this._transport.getPermissions();
   }
-
   getMetadata() {
     return this._transport.getMetadata();
   }
-
+  getMarkInfo() {
+    return this._transport.getMarkInfo();
+  }
   getData() {
     return this._transport.getData();
   }
-
+  saveDocument(printToPDF) {
+    return this._transport.saveDocument(printToPDF);
+  }
+  extractPages(pageInfos, copyLevels = null) {
+    return this._transport.extractPages(pageInfos, copyLevels);
+  }
   getDownloadInfo() {
     return this._transport.downloadInfoCapability.promise;
   }
-
-  getStats() {
-    return this._transport.getStats();
+  cleanup(keepLoadedFonts = false) {
+    return this._transport.startCleanup(keepLoadedFonts || this.isPureXfa);
   }
-
-  cleanup() {
-    return this._transport.startCleanup();
+  cachedPageNumber(ref) {
+    return this._transport.cachedPageNumber(ref);
   }
-
-  destroy() {
-    return this.loadingTask.destroy();
-  }
-
   get loadingParams() {
     return this._transport.loadingParams;
   }
-
   get loadingTask() {
     return this._transport.loadingTask;
   }
-
+  getFieldObjects() {
+    return this._transport.getFieldObjects();
+  }
+  getSignatures() {
+    return this._transport.getSignatures();
+  }
+  getSignatureData(id) {
+    return this._transport.getSignatureData(id);
+  }
+  hasJSActions() {
+    return this._transport.hasJSActions();
+  }
+  getCalculationOrderIds() {
+    return this._transport.getCalculationOrderIds();
+  }
 }
-
-exports.PDFDocumentProxy = PDFDocumentProxy;
-
 class PDFPageProxy {
-  constructor(pageIndex, pageInfo, transport, pdfBug = false) {
+  #pendingCleanup = false;
+  #pagesMapper = null;
+  static #idCounter = 0;
+  constructor(pageIndex, pageInfo, transport, pagesMapper, pdfBug = false) {
     this._pageIndex = pageIndex;
+    this._id = PDFPageProxy.#idCounter++;
     this._pageInfo = pageInfo;
     this._transport = transport;
-    this._stats = pdfBug ? new _display_utils.StatTimer() : null;
+    this._stats = pdfBug ? new StatTimer() : null;
     this._pdfBug = pdfBug;
     this.commonObjs = transport.commonObjs;
     this.objs = new PDFObjects();
-    this.cleanupAfterRender = false;
-    this.pendingCleanup = false;
-    this.intentStates = Object.create(null);
+    this._intentStates = new Map();
     this.destroyed = false;
+    this.recordedBBoxes = null;
+    this.#pagesMapper = pagesMapper;
+    this.imageCoordinates = null;
   }
-
+  clone(id) {
+    const clone = new PDFPageProxy(id, this._pageInfo, this._transport, this.#pagesMapper, this._pdfBug);
+    clone.clonedFromIndex = this.clonedFromIndex ?? this._pageIndex;
+    this._transport.updatePage(clone);
+    return clone;
+  }
   get pageNumber() {
     return this._pageIndex + 1;
   }
-
+  set pageNumber(value) {
+    this._pageIndex = value - 1;
+    this._transport.updatePage(this);
+  }
   get rotate() {
     return this._pageInfo.rotate;
   }
-
   get ref() {
     return this._pageInfo.ref;
   }
-
   get userUnit() {
     return this._pageInfo.userUnit;
   }
-
   get view() {
     return this._pageInfo.view;
   }
-
   getViewport({
     scale,
     rotation = this.rotate,
@@ -515,12 +482,9 @@ class PDFPageProxy {
     offsetY = 0,
     dontFlip = false
   } = {}) {
-    if (arguments.length > 1 || typeof arguments[0] === "number") {
-      throw new Error("PDFPageProxy.getViewport is called with obsolete arguments.");
-    }
-
-    return new _display_utils.PageViewport({
+    return new PageViewport({
       viewBox: this.view,
+      userUnit: this.userUnit,
       scale,
       rotation,
       offsetX,
@@ -528,334 +492,322 @@ class PDFPageProxy {
       dontFlip
     });
   }
-
   getAnnotations({
-    intent = null
+    intent = "display"
   } = {}) {
-    if (!this.annotationsPromise || this.annotationsIntent !== intent) {
-      this.annotationsPromise = this._transport.getAnnotations(this._pageIndex, intent);
-      this.annotationsIntent = intent;
-    }
-
-    return this.annotationsPromise;
+    const {
+      renderingIntent
+    } = this._transport.getRenderingIntent(intent);
+    return this._transport.getAnnotations(this._pageIndex, renderingIntent);
   }
-
+  getJSActions() {
+    return this._transport.getPageJSActions(this._pageIndex);
+  }
+  get filterFactory() {
+    return this._transport.filterFactory;
+  }
+  get isPureXfa() {
+    return shadow(this, "isPureXfa", !!this._transport._htmlForXfa);
+  }
+  async getXfa() {
+    return this._transport._htmlForXfa?.children[this._pageIndex] || null;
+  }
   render({
     canvasContext,
+    canvas = canvasContext.canvas,
     viewport,
     intent = "display",
-    enableWebGL = false,
-    renderInteractiveForms = false,
+    annotationMode = AnnotationMode.ENABLE,
     transform = null,
-    imageLayer = null,
-    canvasFactory = null,
-    background = null
+    background = null,
+    optionalContentConfigPromise = null,
+    annotationCanvasMap = null,
+    pageColors = null,
+    printAnnotationStorage = null,
+    isEditing = false,
+    recordImages = false,
+    recordOperations = false,
+    partialFrames = false,
+    operationsFilter = null
   }) {
-    if (this._stats) {
-      this._stats.time("Overall");
-    }
-
-    const renderingIntent = intent === "print" ? "print" : "display";
-    this.pendingCleanup = false;
-
-    if (!this.intentStates[renderingIntent]) {
-      this.intentStates[renderingIntent] = Object.create(null);
-    }
-
-    const intentState = this.intentStates[renderingIntent];
-
+    this._stats?.time("Overall");
+    const intentArgs = this._transport.getRenderingIntent(intent, annotationMode, printAnnotationStorage, isEditing);
+    const {
+      renderingIntent,
+      cacheKey
+    } = intentArgs;
+    this.#pendingCleanup = false;
+    optionalContentConfigPromise ||= this._transport.getOptionalContentConfig(renderingIntent);
+    const intentState = this._intentStates.getOrInsertComputed(cacheKey, makeObj);
     if (intentState.streamReaderCancelTimeout) {
       clearTimeout(intentState.streamReaderCancelTimeout);
       intentState.streamReaderCancelTimeout = null;
     }
-
-    const canvasFactoryInstance = canvasFactory || new _display_utils.DOMCanvasFactory();
-    const webGLContext = new _webgl.WebGLContext({
-      enable: enableWebGL
-    });
-
+    const intentPrint = !!(renderingIntent & RenderingIntentFlag.PRINT);
     if (!intentState.displayReadyCapability) {
-      intentState.displayReadyCapability = (0, _util.createPromiseCapability)();
+      intentState.displayReadyCapability = Promise.withResolvers();
       intentState.operatorList = {
         fnArray: [],
         argsArray: [],
-        lastChunk: false
+        lastChunk: false,
+        separateAnnots: null
       };
-
-      if (this._stats) {
-        this._stats.time("Page Request");
-      }
-
-      this._pumpOperatorList({
-        pageIndex: this._pageIndex,
-        intent: renderingIntent,
-        renderInteractiveForms: renderInteractiveForms === true
-      });
+      this._stats?.time("Page Request");
+      this._pumpOperatorList(intentArgs);
     }
-
+    const recordForDebugger = !!(this._pdfBug && globalThis.StepperManager?.enabled);
+    const shouldRecordOperations = !!canvas && !this.recordedBBoxes && (recordOperations || recordForDebugger);
+    const shouldRecordImages = !!canvas && !this.imageCoordinates && recordImages;
     const complete = error => {
-      const i = intentState.renderTasks.indexOf(internalRenderTask);
-
-      if (i >= 0) {
-        intentState.renderTasks.splice(i, 1);
+      intentState.renderTasks.delete(internalRenderTask);
+      if (shouldRecordOperations) {
+        const {
+          recordedBBoxes
+        } = internalRenderTask;
+        if (recordedBBoxes) {
+          internalRenderTask.stepper?.setOperatorBBoxes(recordedBBoxes, internalRenderTask.debugMetadata);
+          if (recordOperations) {
+            this.recordedBBoxes = recordedBBoxes;
+          }
+        }
       }
-
-      if (this.cleanupAfterRender || renderingIntent === "print") {
-        this.pendingCleanup = true;
+      if (shouldRecordImages && !error) {
+        this.imageCoordinates = internalRenderTask.imageCoordinates;
       }
-
-      this._tryCleanup();
-
+      if (intentPrint) {
+        this.#pendingCleanup = true;
+      }
+      this.#tryCleanup();
       if (error) {
         internalRenderTask.capability.reject(error);
-
         this._abortOperatorList({
           intentState,
-          reason: error
+          reason: error instanceof Error ? error : new Error(error)
         });
       } else {
         internalRenderTask.capability.resolve();
       }
-
       if (this._stats) {
         this._stats.timeEnd("Rendering");
-
         this._stats.timeEnd("Overall");
+        if (globalThis.Stats?.enabled) {
+          globalThis.Stats.add(this.pageNumber, this._stats);
+        }
       }
     };
-
     const internalRenderTask = new InternalRenderTask({
       callback: complete,
       params: {
+        canvas,
         canvasContext,
         viewport,
         transform,
-        imageLayer,
-        background
+        background,
+        recordOperations: shouldRecordOperations,
+        recordImages: shouldRecordImages,
+        partialFrames,
+        recordForDebugger
       },
       objs: this.objs,
       commonObjs: this.commonObjs,
+      annotationCanvasMap,
       operatorList: intentState.operatorList,
       pageIndex: this._pageIndex,
-      canvasFactory: canvasFactoryInstance,
-      webGLContext,
-      useRequestAnimationFrame: renderingIntent !== "print",
-      pdfBug: this._pdfBug
+      pageProxyId: this._id,
+      canvasFactory: this._transport.canvasFactory,
+      filterFactory: this._transport.filterFactory,
+      useRequestAnimationFrame: !intentPrint,
+      pdfBug: this._pdfBug,
+      pageColors,
+      operationsFilter,
+      rendererWorker: this._transport.rendererWorker,
+      waitForGPU: () => this._transport.waitForGPU()
     });
-
-    if (!intentState.renderTasks) {
-      intentState.renderTasks = [];
-    }
-
-    intentState.renderTasks.push(internalRenderTask);
+    (intentState.renderTasks ||= new Set()).add(internalRenderTask);
     const renderTask = internalRenderTask.task;
-    intentState.displayReadyCapability.promise.then(transparency => {
-      if (this.pendingCleanup) {
+    Promise.all([intentState.displayReadyCapability.promise, optionalContentConfigPromise]).then(async ([transparency, optionalContentConfig]) => {
+      if (this.destroyed) {
         complete();
         return;
       }
-
-      if (this._stats) {
-        this._stats.time("Rendering");
+      this._stats?.time("Rendering");
+      if (!(optionalContentConfig.renderingIntent & renderingIntent)) {
+        throw new Error("Must use the same `intent`-argument when calling the `PDFPageProxy.render` " + "and `PDFDocumentProxy.getOptionalContentConfig` methods.");
       }
-
-      internalRenderTask.initializeGraphics(transparency);
+      await internalRenderTask.initializeGraphics({
+        transparency,
+        optionalContentConfig
+      });
       internalRenderTask.operatorListChanged();
     }).catch(complete);
     return renderTask;
   }
-
-  getOperatorList() {
+  getOperatorList({
+    intent = "display",
+    annotationMode = AnnotationMode.ENABLE,
+    printAnnotationStorage = null,
+    isEditing = false
+  } = {}) {
     function operatorListChanged() {
       if (intentState.operatorList.lastChunk) {
         intentState.opListReadCapability.resolve(intentState.operatorList);
-        const i = intentState.renderTasks.indexOf(opListTask);
-
-        if (i >= 0) {
-          intentState.renderTasks.splice(i, 1);
-        }
+        intentState.renderTasks.delete(opListTask);
       }
     }
-
-    const renderingIntent = "oplist";
-
-    if (!this.intentStates[renderingIntent]) {
-      this.intentStates[renderingIntent] = Object.create(null);
-    }
-
-    const intentState = this.intentStates[renderingIntent];
+    const intentArgs = this._transport.getRenderingIntent(intent, annotationMode, printAnnotationStorage, isEditing, true);
+    const intentState = this._intentStates.getOrInsertComputed(intentArgs.cacheKey, makeObj);
     let opListTask;
-
     if (!intentState.opListReadCapability) {
-      opListTask = {};
+      opListTask = Object.create(null);
       opListTask.operatorListChanged = operatorListChanged;
-      intentState.opListReadCapability = (0, _util.createPromiseCapability)();
-      intentState.renderTasks = [];
-      intentState.renderTasks.push(opListTask);
+      intentState.opListReadCapability = Promise.withResolvers();
+      (intentState.renderTasks ||= new Set()).add(opListTask);
       intentState.operatorList = {
         fnArray: [],
         argsArray: [],
-        lastChunk: false
+        lastChunk: false,
+        separateAnnots: null
       };
-
-      if (this._stats) {
-        this._stats.time("Page Request");
-      }
-
-      this._pumpOperatorList({
-        pageIndex: this._pageIndex,
-        intent: renderingIntent
-      });
+      this._stats?.time("Page Request");
+      this._pumpOperatorList(intentArgs);
     }
-
     return intentState.opListReadCapability.promise;
   }
-
   streamTextContent({
-    normalizeWhitespace = false,
-    disableCombineTextItems = false
+    includeMarkedContent = false,
+    disableNormalization = false
   } = {}) {
     const TEXT_CONTENT_CHUNK_SIZE = 100;
     return this._transport.messageHandler.sendWithStream("GetTextContent", {
+      pageId: this.#pagesMapper.getPageId(this._pageIndex + 1) - 1,
       pageIndex: this._pageIndex,
-      normalizeWhitespace: normalizeWhitespace === true,
-      combineTextItems: disableCombineTextItems !== true
+      includeMarkedContent: includeMarkedContent === true,
+      disableNormalization: disableNormalization === true
     }, {
       highWaterMark: TEXT_CONTENT_CHUNK_SIZE,
-
-      size(textContent) {
-        return textContent.items.length;
-      }
-
+      size: textContent => textContent.items.length
     });
   }
-
-  getTextContent(params = {}) {
+  async getTextContent(params = {}) {
+    if (this._transport._htmlForXfa) {
+      return this.getXfa().then(xfa => XfaText.textContent(xfa));
+    }
     const readableStream = this.streamTextContent(params);
-    return new Promise(function (resolve, reject) {
-      function pump() {
-        reader.read().then(function ({
-          value,
-          done
-        }) {
-          if (done) {
-            resolve(textContent);
-            return;
-          }
-
-          Object.assign(textContent.styles, value.styles);
-          textContent.items.push(...value.items);
-          pump();
-        }, reject);
+    const reader = readableStream.getReader();
+    const textContent = {
+      items: [],
+      styles: Object.create(null),
+      lang: null
+    };
+    while (true) {
+      const {
+        value,
+        done
+      } = await reader.read();
+      if (done) {
+        break;
       }
-
-      const reader = readableStream.getReader();
-      const textContent = {
-        items: [],
-        styles: Object.create(null)
-      };
-      pump();
-    });
+      textContent.lang ??= value.lang;
+      Object.assign(textContent.styles, value.styles);
+      textContent.items.push(...value.items);
+    }
+    return textContent;
   }
-
+  getStructTree() {
+    return this._transport.getStructTree(this._pageIndex);
+  }
   _destroy() {
     this.destroyed = true;
-    this._transport.pageCache[this._pageIndex] = null;
     const waitOn = [];
-    Object.keys(this.intentStates).forEach(intent => {
-      const intentState = this.intentStates[intent];
-
+    for (const intentState of this._intentStates.values()) {
       this._abortOperatorList({
         intentState,
         reason: new Error("Page was destroyed."),
         force: true
       });
-
-      if (intent === "oplist") {
-        return;
+      if (intentState.opListReadCapability) {
+        continue;
       }
-
-      intentState.renderTasks.forEach(function (renderTask) {
-        const renderCompleted = renderTask.capability.promise.catch(function () {});
-        waitOn.push(renderCompleted);
-        renderTask.cancel();
-      });
-    });
+      for (const internalRenderTask of intentState.renderTasks) {
+        waitOn.push(internalRenderTask.completed);
+        internalRenderTask.cancel();
+      }
+    }
     this.objs.clear();
-    this.annotationsPromise = null;
-    this.pendingCleanup = false;
+    this._transport.cleanupPage(this._id);
+    this.#pendingCleanup = false;
     return Promise.all(waitOn);
   }
-
   cleanup(resetStats = false) {
-    this.pendingCleanup = true;
-    return this._tryCleanup(resetStats);
+    this.#pendingCleanup = true;
+    const success = this.#tryCleanup();
+    if (resetStats && success) {
+      this._stats &&= new StatTimer();
+    }
+    return success;
   }
-
-  _tryCleanup(resetStats = false) {
-    if (!this.pendingCleanup || Object.keys(this.intentStates).some(intent => {
-      const intentState = this.intentStates[intent];
-      return intentState.renderTasks.length !== 0 || !intentState.operatorList.lastChunk;
-    })) {
+  #tryCleanup() {
+    if (!this.#pendingCleanup || this.destroyed) {
       return false;
     }
-
-    Object.keys(this.intentStates).forEach(intent => {
-      delete this.intentStates[intent];
-    });
-    this.objs.clear();
-    this.annotationsPromise = null;
-
-    if (resetStats && this._stats) {
-      this._stats = new _display_utils.StatTimer();
+    for (const {
+      renderTasks,
+      operatorList
+    } of this._intentStates.values()) {
+      if (renderTasks.size > 0 || !operatorList.lastChunk) {
+        return false;
+      }
     }
-
-    this.pendingCleanup = false;
+    this._intentStates.clear();
+    this.objs.clear();
+    this._transport.cleanupPage(this._id);
+    this.#pendingCleanup = false;
     return true;
   }
-
-  _startRenderPage(transparency, intent) {
-    const intentState = this.intentStates[intent];
-
+  _startRenderPage(transparency, cacheKey) {
+    const intentState = this._intentStates.get(cacheKey);
     if (!intentState) {
       return;
     }
-
-    if (this._stats) {
-      this._stats.timeEnd("Page Request");
-    }
-
-    if (intentState.displayReadyCapability) {
-      intentState.displayReadyCapability.resolve(transparency);
-    }
+    this._stats?.timeEnd("Page Request");
+    intentState.displayReadyCapability?.resolve(transparency);
   }
-
   _renderPageChunk(operatorListChunk, intentState) {
     for (let i = 0, ii = operatorListChunk.length; i < ii; i++) {
       intentState.operatorList.fnArray.push(operatorListChunk.fnArray[i]);
       intentState.operatorList.argsArray.push(operatorListChunk.argsArray[i]);
     }
-
     intentState.operatorList.lastChunk = operatorListChunk.lastChunk;
-
-    for (let i = 0; i < intentState.renderTasks.length; i++) {
-      intentState.renderTasks[i].operatorListChanged();
+    intentState.operatorList.separateAnnots = operatorListChunk.separateAnnots;
+    for (const internalRenderTask of intentState.renderTasks) {
+      internalRenderTask.operatorListChanged();
     }
-
     if (operatorListChunk.lastChunk) {
-      this._tryCleanup();
+      this.#tryCleanup();
     }
   }
-
-  _pumpOperatorList(args) {
-    (0, _util.assert)(args.intent, 'PDFPageProxy._pumpOperatorList: Expected "intent" argument.');
-
-    const readableStream = this._transport.messageHandler.sendWithStream("GetOperatorList", args);
-
+  _pumpOperatorList({
+    renderingIntent,
+    cacheKey,
+    annotationStorageSerializable,
+    modifiedIds
+  }) {
+    const {
+      map,
+      transfer
+    } = annotationStorageSerializable;
+    const readableStream = this._transport.messageHandler.sendWithStream("GetOperatorList", {
+      pageId: this.#pagesMapper.getPageId(this._pageIndex + 1) - 1,
+      pageIndex: this._pageIndex,
+      pageProxyId: this._id,
+      intent: renderingIntent,
+      cacheKey,
+      annotationStorage: map,
+      modifiedIds
+    }, undefined, transfer);
     const reader = readableStream.getReader();
-    const intentState = this.intentStates[args.intent];
+    const intentState = this._intentStates.get(cacheKey);
     intentState.streamReader = reader;
-
     const pump = () => {
       reader.read().then(({
         value,
@@ -865,31 +817,23 @@ class PDFPageProxy {
           intentState.streamReader = null;
           return;
         }
-
         if (this._transport.destroyed) {
           return;
         }
-
         this._renderPageChunk(value, intentState);
-
         pump();
       }, reason => {
         intentState.streamReader = null;
-
         if (this._transport.destroyed) {
           return;
         }
-
         if (intentState.operatorList) {
           intentState.operatorList.lastChunk = true;
-
-          for (let i = 0; i < intentState.renderTasks.length; i++) {
-            intentState.renderTasks[i].operatorListChanged();
+          for (const internalRenderTask of intentState.renderTasks) {
+            internalRenderTask.operatorListChanged();
           }
-
-          this._tryCleanup();
+          this.#tryCleanup();
         }
-
         if (intentState.displayReadyCapability) {
           intentState.displayReadyCapability.reject(reason);
         } else if (intentState.opListReadCapability) {
@@ -899,547 +843,369 @@ class PDFPageProxy {
         }
       });
     };
-
     pump();
   }
-
   _abortOperatorList({
     intentState,
     reason,
     force = false
   }) {
-    (0, _util.assert)(reason instanceof Error || typeof reason === "object" && reason !== null, 'PDFPageProxy._abortOperatorList: Expected "reason" argument.');
-
     if (!intentState.streamReader) {
       return;
     }
-
+    if (intentState.streamReaderCancelTimeout) {
+      clearTimeout(intentState.streamReaderCancelTimeout);
+      intentState.streamReaderCancelTimeout = null;
+    }
     if (!force) {
-      if (intentState.renderTasks.length !== 0) {
+      if (intentState.renderTasks.size > 0) {
         return;
       }
-
-      if (reason instanceof _display_utils.RenderingCancelledException) {
+      if (reason instanceof RenderingCancelledException) {
+        let delay = RENDERING_CANCELLED_TIMEOUT;
+        if (reason.extraDelay > 0 && reason.extraDelay < 1000) {
+          delay += reason.extraDelay;
+        }
         intentState.streamReaderCancelTimeout = setTimeout(() => {
+          intentState.streamReaderCancelTimeout = null;
           this._abortOperatorList({
             intentState,
             reason,
             force: true
           });
-
-          intentState.streamReaderCancelTimeout = null;
-        }, RENDERING_CANCELLED_TIMEOUT);
+        }, delay);
         return;
       }
     }
-
-    intentState.streamReader.cancel(new _util.AbortException(reason && reason.message));
+    intentState.streamReader.cancel(new AbortException(reason.message)).catch(() => {});
     intentState.streamReader = null;
-
     if (this._transport.destroyed) {
       return;
     }
-
-    Object.keys(this.intentStates).some(intent => {
-      if (this.intentStates[intent] === intentState) {
-        delete this.intentStates[intent];
-        return true;
+    for (const [curCacheKey, curIntentState] of this._intentStates) {
+      if (curIntentState === intentState) {
+        this._intentStates.delete(curCacheKey);
+        break;
       }
-
-      return false;
-    });
+    }
     this.cleanup();
   }
-
   get stats() {
     return this._stats;
   }
-
 }
-
-exports.PDFPageProxy = PDFPageProxy;
-
-class LoopbackPort {
-  constructor(defer = true) {
-    this._listeners = [];
-    this._defer = defer;
-    this._deferred = Promise.resolve(undefined);
-  }
-
-  postMessage(obj, transfers) {
-    function cloneValue(value) {
-      if (typeof value !== "object" || value === null) {
-        return value;
-      }
-
-      if (cloned.has(value)) {
-        return cloned.get(value);
-      }
-
-      let buffer, result;
-
-      if ((buffer = value.buffer) && (0, _util.isArrayBuffer)(buffer)) {
-        const transferable = transfers && transfers.includes(buffer);
-
-        if (transferable) {
-          result = new value.constructor(buffer, value.byteOffset, value.byteLength);
-        } else {
-          result = new value.constructor(value);
-        }
-
-        cloned.set(value, result);
-        return result;
-      }
-
-      result = Array.isArray(value) ? [] : {};
-      cloned.set(value, result);
-
-      for (const i in value) {
-        let desc,
-            p = value;
-
-        while (!(desc = Object.getOwnPropertyDescriptor(p, i))) {
-          p = Object.getPrototypeOf(p);
-        }
-
-        if (typeof desc.value === "undefined") {
-          continue;
-        }
-
-        if (typeof desc.value === "function") {
-          if (value.hasOwnProperty && value.hasOwnProperty(i)) {
-            throw new Error(`LoopbackPort.postMessage - cannot clone: ${value[i]}`);
-          }
-
-          continue;
-        }
-
-        result[i] = cloneValue(desc.value);
-      }
-
-      return result;
+class PDFWorker {
+  #capability = Promise.withResolvers();
+  #messageHandler = null;
+  #port = null;
+  #webWorker = null;
+  static #fakeWorkerId = 0;
+  static #isWorkerDisabled = false;
+  static #workerPorts = new WeakMap();
+  static {
+    if (isNodeJS) {
+      this.#isWorkerDisabled = true;
+      GlobalWorkerOptions.workerSrc ||= "../pdf.worker.js";
     }
-
-    if (!this._defer) {
-      this._listeners.forEach(listener => {
-        listener.call(this, {
-          data: obj
-        });
-      });
-
+  }
+  constructor({
+    name = null,
+    port = null,
+    verbosity = getVerbosityLevel()
+  } = {}) {
+    this.name = name;
+    this.destroyed = false;
+    this.verbosity = verbosity;
+    if (port) {
+      if (PDFWorker.#workerPorts.has(port)) {
+        throw new Error("Cannot use more than one PDFWorker per port.");
+      }
+      PDFWorker.#workerPorts.set(port, this);
+      this.#initializeFromPort(port);
+    } else {
+      this.#initialize();
+    }
+  }
+  get promise() {
+    return this.#capability.promise;
+  }
+  #resolve() {
+    this.#capability.resolve();
+    this.#messageHandler.send("configure", {
+      verbosity: this.verbosity
+    });
+  }
+  get port() {
+    return this.#port;
+  }
+  get messageHandler() {
+    return this.#messageHandler;
+  }
+  #initializeFromPort(port) {
+    this.#port = port;
+    this.#messageHandler = new MessageHandler("main", "worker", port);
+    this.#messageHandler.on("ready", () => {});
+    this.#resolve();
+  }
+  #initialize() {
+    if (PDFWorker.#isWorkerDisabled || PDFWorker.#mainThreadWorkerMessageHandler) {
+      this.#setupFakeWorker();
       return;
     }
-
-    const cloned = new WeakMap();
-    const e = {
-      data: cloneValue(obj)
-    };
-
-    this._deferred.then(() => {
-      this._listeners.forEach(listener => {
-        listener.call(this, e);
-      });
-    });
-  }
-
-  addEventListener(name, listener) {
-    this._listeners.push(listener);
-  }
-
-  removeEventListener(name, listener) {
-    const i = this._listeners.indexOf(listener);
-
-    this._listeners.splice(i, 1);
-  }
-
-  terminate() {
-    this._listeners.length = 0;
-  }
-
-}
-
-exports.LoopbackPort = LoopbackPort;
-
-const PDFWorker = function PDFWorkerClosure() {
-  const pdfWorkerPorts = new WeakMap();
-  let isWorkerDisabled = false;
-  let fallbackWorkerSrc;
-  let nextFakeWorkerId = 0;
-  let fakeWorkerCapability;
-
-  if (_is_node.isNodeJS && typeof require === "function") {
-    isWorkerDisabled = true;
-    fallbackWorkerSrc = "../pdf.worker.js";
-  } else if (typeof document === "object" && "currentScript" in document) {
-    const pdfjsFilePath = document.currentScript && document.currentScript.src;
-
-    if (pdfjsFilePath) {
-      fallbackWorkerSrc = pdfjsFilePath.replace(/(\.(?:min\.)?js)(\?.*)?$/i, ".worker$1$2");
-    }
-  }
-
-  function getWorkerSrc() {
-    if (_worker_options.GlobalWorkerOptions.workerSrc) {
-      return _worker_options.GlobalWorkerOptions.workerSrc;
-    }
-
-    if (typeof fallbackWorkerSrc !== "undefined") {
-      if (!_is_node.isNodeJS) {
-        (0, _display_utils.deprecated)('No "GlobalWorkerOptions.workerSrc" specified.');
-      }
-
-      return fallbackWorkerSrc;
-    }
-
-    throw new Error('No "GlobalWorkerOptions.workerSrc" specified.');
-  }
-
-  function getMainThreadWorkerMessageHandler() {
-    let mainWorkerMessageHandler;
-
+    const {
+      workerSrc
+    } = PDFWorker;
     try {
-      mainWorkerMessageHandler = globalThis.pdfjsWorker && globalThis.pdfjsWorker.WorkerMessageHandler;
-    } catch (ex) {}
-
-    return mainWorkerMessageHandler || null;
-  }
-
-  function setupFakeWorkerGlobal() {
-    if (fakeWorkerCapability) {
-      return fakeWorkerCapability.promise;
+      const worker = new Worker(getWorkerSrc(workerSrc), {
+        type: "module"
+      });
+      const messageHandler = new MessageHandler("main", "worker", worker);
+      const terminateEarly = () => {
+        ac.abort();
+        messageHandler.destroy();
+        worker.terminate();
+        if (this.destroyed) {
+          this.#capability.reject(new Error("Worker was destroyed"));
+        } else {
+          this.#setupFakeWorker();
+        }
+      };
+      const ac = new AbortController();
+      worker.addEventListener("error", () => {
+        if (!this.#webWorker) {
+          terminateEarly();
+        }
+      }, {
+        signal: ac.signal
+      });
+      messageHandler.on("ready", data => {
+        ac.abort();
+        if (this.destroyed || !(data instanceof Uint8Array)) {
+          terminateEarly();
+          return;
+        }
+        this.#messageHandler = messageHandler;
+        this.#port = worker;
+        this.#webWorker = worker;
+        this.#resolve();
+      });
+    } catch {
+      info("The worker has been disabled.");
+      this.#setupFakeWorker();
     }
-
-    fakeWorkerCapability = (0, _util.createPromiseCapability)();
-
-    const loader = async function () {
-      const mainWorkerMessageHandler = getMainThreadWorkerMessageHandler();
-
-      if (mainWorkerMessageHandler) {
-        return mainWorkerMessageHandler;
-      }
-
-      if (_is_node.isNodeJS && typeof require === "function") {
-        const worker = eval("require")(getWorkerSrc());
-        return worker.WorkerMessageHandler;
-      }
-
-      await (0, _display_utils.loadScript)(getWorkerSrc());
-      return window.pdfjsWorker.WorkerMessageHandler;
-    };
-
-    loader().then(fakeWorkerCapability.resolve, fakeWorkerCapability.reject);
-    return fakeWorkerCapability.promise;
   }
-
-  function createCDNWrapper(url) {
-    const wrapper = "importScripts('" + url + "');";
-    return URL.createObjectURL(new Blob([wrapper]));
-  }
-
-  class PDFWorker {
-    constructor({
-      name = null,
-      port = null,
-      verbosity = (0, _util.getVerbosityLevel)()
-    } = {}) {
-      if (port && pdfWorkerPorts.has(port)) {
-        throw new Error("Cannot use more than one PDFWorker per port");
-      }
-
-      this.name = name;
-      this.destroyed = false;
-      this.postMessageTransfers = true;
-      this.verbosity = verbosity;
-      this._readyCapability = (0, _util.createPromiseCapability)();
-      this._port = null;
-      this._webWorker = null;
-      this._messageHandler = null;
-
-      if (port) {
-        pdfWorkerPorts.set(port, this);
-
-        this._initializeFromPort(port);
-
+  #setupFakeWorker() {
+    if (!PDFWorker.#isWorkerDisabled) {
+      warn("Setting up fake worker.");
+      PDFWorker.#isWorkerDisabled = true;
+    }
+    PDFWorker._setupFakeWorkerGlobal.then(WorkerMessageHandler => {
+      if (this.destroyed) {
+        this.#capability.reject(new Error("Worker was destroyed"));
         return;
       }
-
-      this._initialize();
-    }
-
-    get promise() {
-      return this._readyCapability.promise;
-    }
-
-    get port() {
-      return this._port;
-    }
-
-    get messageHandler() {
-      return this._messageHandler;
-    }
-
-    _initializeFromPort(port) {
-      this._port = port;
-      this._messageHandler = new _message_handler.MessageHandler("main", "worker", port);
-
-      this._messageHandler.on("ready", function () {});
-
-      this._readyCapability.resolve();
-    }
-
-    _initialize() {
-      if (typeof Worker !== "undefined" && !isWorkerDisabled && !getMainThreadWorkerMessageHandler()) {
-        let workerSrc = getWorkerSrc();
-
-        try {
-          if (!(0, _util.isSameOrigin)(window.location.href, workerSrc)) {
-            workerSrc = createCDNWrapper(new URL(workerSrc, window.location).href);
-          }
-
-          const worker = new Worker(workerSrc);
-          const messageHandler = new _message_handler.MessageHandler("main", "worker", worker);
-
-          const terminateEarly = () => {
-            worker.removeEventListener("error", onWorkerError);
-            messageHandler.destroy();
-            worker.terminate();
-
-            if (this.destroyed) {
-              this._readyCapability.reject(new Error("Worker was destroyed"));
-            } else {
-              this._setupFakeWorker();
-            }
-          };
-
-          const onWorkerError = () => {
-            if (!this._webWorker) {
-              terminateEarly();
-            }
-          };
-
-          worker.addEventListener("error", onWorkerError);
-          messageHandler.on("test", data => {
-            worker.removeEventListener("error", onWorkerError);
-
-            if (this.destroyed) {
-              terminateEarly();
-              return;
-            }
-
-            if (data) {
-              this._messageHandler = messageHandler;
-              this._port = worker;
-              this._webWorker = worker;
-
-              if (!data.supportTransfers) {
-                this.postMessageTransfers = false;
-              }
-
-              this._readyCapability.resolve();
-
-              messageHandler.send("configure", {
-                verbosity: this.verbosity
-              });
-            } else {
-              this._setupFakeWorker();
-
-              messageHandler.destroy();
-              worker.terminate();
-            }
-          });
-          messageHandler.on("ready", data => {
-            worker.removeEventListener("error", onWorkerError);
-
-            if (this.destroyed) {
-              terminateEarly();
-              return;
-            }
-
-            try {
-              sendTest();
-            } catch (e) {
-              this._setupFakeWorker();
-            }
-          });
-
-          const sendTest = () => {
-            const testObj = new Uint8Array([this.postMessageTransfers ? 255 : 0]);
-
-            try {
-              messageHandler.send("test", testObj, [testObj.buffer]);
-            } catch (ex) {
-              (0, _util.warn)("Cannot use postMessage transfers.");
-              testObj[0] = 0;
-              messageHandler.send("test", testObj);
-            }
-          };
-
-          sendTest();
-          return;
-        } catch (e) {
-          (0, _util.info)("The worker has been disabled.");
-        }
-      }
-
-      this._setupFakeWorker();
-    }
-
-    _setupFakeWorker() {
-      if (!isWorkerDisabled) {
-        (0, _util.warn)("Setting up fake worker.");
-        isWorkerDisabled = true;
-      }
-
-      setupFakeWorkerGlobal().then(WorkerMessageHandler => {
-        if (this.destroyed) {
-          this._readyCapability.reject(new Error("Worker was destroyed"));
-
-          return;
-        }
-
-        const port = new LoopbackPort();
-        this._port = port;
-        const id = "fake" + nextFakeWorkerId++;
-        const workerHandler = new _message_handler.MessageHandler(id + "_worker", id, port);
-        WorkerMessageHandler.setup(workerHandler, port);
-        const messageHandler = new _message_handler.MessageHandler(id, id + "_worker", port);
-        this._messageHandler = messageHandler;
-
-        this._readyCapability.resolve();
-
-        messageHandler.send("configure", {
-          verbosity: this.verbosity
-        });
-      }).catch(reason => {
-        this._readyCapability.reject(new Error(`Setting up fake worker failed: "${reason.message}".`));
-      });
-    }
-
-    destroy() {
-      this.destroyed = true;
-
-      if (this._webWorker) {
-        this._webWorker.terminate();
-
-        this._webWorker = null;
-      }
-
-      pdfWorkerPorts.delete(this._port);
-      this._port = null;
-
-      if (this._messageHandler) {
-        this._messageHandler.destroy();
-
-        this._messageHandler = null;
-      }
-    }
-
-    static fromPort(params) {
-      if (!params || !params.port) {
-        throw new Error("PDFWorker.fromPort - invalid method signature.");
-      }
-
-      if (pdfWorkerPorts.has(params.port)) {
-        return pdfWorkerPorts.get(params.port);
-      }
-
-      return new PDFWorker(params);
-    }
-
-    static getWorkerSrc() {
-      return getWorkerSrc();
-    }
-
+      const port = new LoopbackPort();
+      this.#port = port;
+      const id = `fake${PDFWorker.#fakeWorkerId++}`;
+      const workerHandler = new MessageHandler(id + "_worker", id, port);
+      WorkerMessageHandler.setup(workerHandler, port);
+      this.#messageHandler = new MessageHandler(id, id + "_worker", port);
+      this.#resolve();
+    }).catch(reason => {
+      this.#capability.reject(new Error(`Setting up fake worker failed: "${reason.message}".`));
+    });
   }
-
-  return PDFWorker;
-}();
-
-exports.PDFWorker = PDFWorker;
-
+  destroy() {
+    this.destroyed = true;
+    this.#webWorker?.terminate();
+    this.#webWorker = null;
+    PDFWorker.#workerPorts.delete(this.#port);
+    this.#port = null;
+    this.#messageHandler?.destroy();
+    this.#messageHandler = null;
+  }
+  static create(params) {
+    const cachedPort = this.#workerPorts.get(params?.port);
+    if (cachedPort) {
+      if (cachedPort._pendingDestroy) {
+        throw new Error("PDFWorker.create - the worker is being destroyed.\n" + "Please remember to await `PDFDocumentLoadingTask.destroy()`-calls.");
+      }
+      return cachedPort;
+    }
+    return new PDFWorker(params);
+  }
+  static get workerSrc() {
+    if (GlobalWorkerOptions.workerSrc) {
+      return GlobalWorkerOptions.workerSrc;
+    }
+    throw new Error('No "GlobalWorkerOptions.workerSrc" specified.');
+  }
+  static get #mainThreadWorkerMessageHandler() {
+    try {
+      return globalThis.pdfjsWorker?.WorkerMessageHandler || null;
+    } catch {
+      return null;
+    }
+  }
+  static get _setupFakeWorkerGlobal() {
+    const loader = async () => {
+      if (this.#mainThreadWorkerMessageHandler) {
+        return this.#mainThreadWorkerMessageHandler;
+      }
+      const worker = await import(
+      /*webpackIgnore: true*/
+      /*@vite-ignore*/
+      this.workerSrc);
+      return worker.WorkerMessageHandler;
+    };
+    return shadow(this, "_setupFakeWorkerGlobal", loader());
+  }
+}
 class WorkerTransport {
-  constructor(messageHandler, loadingTask, networkStream, params) {
+  downloadInfoCapability = Promise.withResolvers();
+  #fullReader = null;
+  #hasMeshPattern = false;
+  #methodPromises = new Map();
+  #networkStream = null;
+  #pageCache = new Map();
+  #pagePromises = new Map();
+  #pageRefCache = new Map();
+  #passwordCapability = null;
+  #printToPDF = null;
+  constructor(messageHandler, loadingTask, networkStream, params, factory, pagesMapper) {
     this.messageHandler = messageHandler;
     this.loadingTask = loadingTask;
+    this.#networkStream = networkStream;
     this.commonObjs = new PDFObjects();
-    this.fontLoader = new _font_loader.FontLoader({
-      docId: loadingTask.docId,
-      onUnsupportedFeature: this._onUnsupportedFeature.bind(this)
+    this.fontLoader = new FontLoader({
+      ownerDocument: params.ownerDocument,
+      styleElement: params.styleElement
     });
+    this.rendererWorker = params.rendererWorker;
+    this.loadingParams = params.loadingParams;
     this._params = params;
-    this.CMapReaderFactory = new params.CMapReaderFactory({
-      baseUrl: params.cMapUrl,
-      isCompressed: params.cMapPacked
-    });
+    this.canvasFactory = factory.canvasFactory;
+    this.filterFactory = factory.filterFactory;
+    this.binaryDataFactory = factory.binaryDataFactory;
+    this.pagesMapper = pagesMapper;
     this.destroyed = false;
     this.destroyCapability = null;
-    this._passwordCapability = null;
-    this._networkStream = networkStream;
-    this._fullReader = null;
-    this._lastProgress = null;
-    this.pageCache = [];
-    this.pagePromises = [];
-    this.downloadInfoCapability = (0, _util.createPromiseCapability)();
     this.setupMessageHandler();
   }
-
+  updatePage(page) {
+    this.#pageCache.set(page._id, page);
+    this.#pagePromises.set(page._pageIndex, Promise.resolve(page));
+  }
+  #cacheSimpleMethod(name, data = null) {
+    return this.#methodPromises.getOrInsertComputed(name, () => this.messageHandler.sendWithPromise(name, data));
+  }
+  #onProgress({
+    loaded,
+    total
+  }) {
+    this.loadingTask.onProgress?.({
+      loaded,
+      total,
+      percent: total ? MathClamp(Math.round(loaded / total * 100), 0, 100) : NaN
+    });
+  }
+  get annotationStorage() {
+    return shadow(this, "annotationStorage", new AnnotationStorage());
+  }
+  getRenderingIntent(intent, annotationMode = AnnotationMode.ENABLE, printAnnotationStorage = null, isEditing = false, isOpList = false) {
+    let renderingIntent = RenderingIntentFlag.DISPLAY;
+    let annotationStorageSerializable = SerializableEmpty;
+    switch (intent) {
+      case "any":
+        renderingIntent = RenderingIntentFlag.ANY;
+        break;
+      case "display":
+        break;
+      case "print":
+        renderingIntent = RenderingIntentFlag.PRINT;
+        break;
+      default:
+        warn(`getRenderingIntent - invalid intent: ${intent}`);
+    }
+    const annotationStorage = renderingIntent & RenderingIntentFlag.PRINT && printAnnotationStorage instanceof PrintAnnotationStorage ? printAnnotationStorage : this.annotationStorage;
+    switch (annotationMode) {
+      case AnnotationMode.DISABLE:
+        renderingIntent += RenderingIntentFlag.ANNOTATIONS_DISABLE;
+        break;
+      case AnnotationMode.ENABLE:
+        break;
+      case AnnotationMode.ENABLE_FORMS:
+        renderingIntent += RenderingIntentFlag.ANNOTATIONS_FORMS;
+        break;
+      case AnnotationMode.ENABLE_STORAGE:
+        renderingIntent += RenderingIntentFlag.ANNOTATIONS_STORAGE;
+        annotationStorageSerializable = annotationStorage.serializable;
+        break;
+      default:
+        warn(`getRenderingIntent - invalid annotationMode: ${annotationMode}`);
+    }
+    if (isEditing) {
+      renderingIntent += RenderingIntentFlag.IS_EDITING;
+    }
+    if (isOpList) {
+      renderingIntent += RenderingIntentFlag.OPLIST;
+    }
+    const {
+      ids: modifiedIds,
+      hash: modifiedIdsHash
+    } = annotationStorage.modifiedIds;
+    const cacheKeyBuf = [renderingIntent, annotationStorageSerializable.hash, modifiedIdsHash];
+    return {
+      renderingIntent,
+      cacheKey: cacheKeyBuf.join("_"),
+      annotationStorageSerializable,
+      modifiedIds
+    };
+  }
   destroy() {
     if (this.destroyCapability) {
       return this.destroyCapability.promise;
     }
-
     this.destroyed = true;
-    this.destroyCapability = (0, _util.createPromiseCapability)();
-
-    if (this._passwordCapability) {
-      this._passwordCapability.reject(new Error("Worker was destroyed during onPassword callback"));
-    }
-
+    this.destroyCapability = Promise.withResolvers();
+    this.#passwordCapability?.reject(new Error("Worker was destroyed during onPassword callback"));
     const waitOn = [];
-    this.pageCache.forEach(function (page) {
-      if (page) {
-        waitOn.push(page._destroy());
-      }
-    });
-    this.pageCache.length = 0;
-    this.pagePromises.length = 0;
+    for (const page of this.#pageCache.values()) {
+      waitOn.push(page._destroy());
+    }
+    this.#pageCache.clear();
+    this.#pagePromises.clear();
+    this.#pageRefCache.clear();
+    if (Object.hasOwn(this, "annotationStorage")) {
+      this.annotationStorage.resetModified();
+    }
     const terminated = this.messageHandler.sendWithPromise("Terminate", null);
     waitOn.push(terminated);
     Promise.all(waitOn).then(() => {
+      this.commonObjs.clear();
       this.fontLoader.clear();
-
-      if (this._networkStream) {
-        this._networkStream.cancelAllRequests(new _util.AbortException("Worker was terminated."));
-      }
-
-      if (this.messageHandler) {
-        this.messageHandler.destroy();
-        this.messageHandler = null;
-      }
-
+      this.#methodPromises.clear();
+      this.filterFactory.destroy();
+      TextLayer.cleanup();
+      this.#networkStream?.cancelAllRequests(new AbortException("Worker was terminated."));
+      this.messageHandler?.destroy();
+      this.messageHandler = null;
+      this.rendererWorker = null;
       this.destroyCapability.resolve();
     }, this.destroyCapability.reject);
     return this.destroyCapability.promise;
   }
-
   setupMessageHandler() {
     const {
       messageHandler,
       loadingTask
     } = this;
     messageHandler.on("GetReader", (data, sink) => {
-      (0, _util.assert)(this._networkStream);
-      this._fullReader = this._networkStream.getFullReader();
-
-      this._fullReader.onProgress = evt => {
-        this._lastProgress = {
-          loaded: evt.loaded,
-          total: evt.total
-        };
-      };
-
+      assert(this.#networkStream, "GetReader - no `BasePDFStream` instance available.");
+      this.#fullReader = this.#networkStream.getFullReader();
+      this.#fullReader.onProgress = evt => this.#onProgress(evt);
       sink.onPull = () => {
-        this._fullReader.read().then(function ({
+        this.#fullReader.read().then(function ({
           value,
           done
         }) {
@@ -1447,55 +1213,45 @@ class WorkerTransport {
             sink.close();
             return;
           }
-
-          (0, _util.assert)((0, _util.isArrayBuffer)(value));
+          assert(value instanceof ArrayBuffer, "GetReader - expected an ArrayBuffer.");
           sink.enqueue(new Uint8Array(value), 1, [value]);
         }).catch(reason => {
           sink.error(reason);
         });
       };
-
       sink.onCancel = reason => {
-        this._fullReader.cancel(reason);
+        this.#fullReader.cancel(reason);
+        sink.ready.catch(readyReason => {
+          if (this.destroyed) {
+            return;
+          }
+          throw readyReason;
+        });
       };
     });
-    messageHandler.on("ReaderHeadersReady", data => {
-      const headersCapability = (0, _util.createPromiseCapability)();
-      const fullReader = this._fullReader;
-      fullReader.headersReady.then(() => {
-        if (!fullReader.isStreamingSupported || !fullReader.isRangeSupported) {
-          if (this._lastProgress && loadingTask.onProgress) {
-            loadingTask.onProgress(this._lastProgress);
-          }
-
-          fullReader.onProgress = evt => {
-            if (loadingTask.onProgress) {
-              loadingTask.onProgress({
-                loaded: evt.loaded,
-                total: evt.total
-              });
-            }
-          };
-        }
-
-        headersCapability.resolve({
-          isStreamingSupported: fullReader.isStreamingSupported,
-          isRangeSupported: fullReader.isRangeSupported,
-          contentLength: fullReader.contentLength
-        });
-      }, headersCapability.reject);
-      return headersCapability.promise;
+    messageHandler.on("ReaderHeadersReady", async data => {
+      await this.#fullReader.headersReady;
+      const {
+        isStreamingSupported,
+        isRangeSupported,
+        contentLength
+      } = this.#fullReader;
+      if (isStreamingSupported && isRangeSupported) {
+        this.#fullReader.onProgress = null;
+      }
+      return {
+        isStreamingSupported,
+        isRangeSupported,
+        contentLength
+      };
     });
     messageHandler.on("GetRangeReader", (data, sink) => {
-      (0, _util.assert)(this._networkStream);
-
-      const rangeReader = this._networkStream.getRangeReader(data.begin, data.end);
-
+      assert(this.#networkStream, "GetRangeReader - no `BasePDFStream` instance available.");
+      const rangeReader = this.#networkStream.getRangeReader(data.begin, data.end);
       if (!rangeReader) {
         sink.close();
         return;
       }
-
       sink.onPull = () => {
         rangeReader.read().then(function ({
           value,
@@ -1505,702 +1261,647 @@ class WorkerTransport {
             sink.close();
             return;
           }
-
-          (0, _util.assert)((0, _util.isArrayBuffer)(value));
+          assert(value instanceof ArrayBuffer, "GetRangeReader - expected an ArrayBuffer.");
           sink.enqueue(new Uint8Array(value), 1, [value]);
         }).catch(reason => {
           sink.error(reason);
         });
       };
-
       sink.onCancel = reason => {
         rangeReader.cancel(reason);
+        sink.ready.catch(readyReason => {
+          if (this.destroyed) {
+            return;
+          }
+          throw readyReason;
+        });
       };
     });
     messageHandler.on("GetDoc", ({
       pdfInfo
     }) => {
+      this.pagesMapper.pagesNumber = pdfInfo.numPages;
       this._numPages = pdfInfo.numPages;
-
+      this._htmlForXfa = pdfInfo.htmlForXfa;
+      delete pdfInfo.htmlForXfa;
       loadingTask._capability.resolve(new PDFDocumentProxy(pdfInfo, this));
     });
-    messageHandler.on("DocException", function (ex) {
-      let reason;
-
-      switch (ex.name) {
-        case "PasswordException":
-          reason = new _util.PasswordException(ex.message, ex.code);
-          break;
-
-        case "InvalidPDFException":
-          reason = new _util.InvalidPDFException(ex.message);
-          break;
-
-        case "MissingPDFException":
-          reason = new _util.MissingPDFException(ex.message);
-          break;
-
-        case "UnexpectedResponseException":
-          reason = new _util.UnexpectedResponseException(ex.message, ex.status);
-          break;
-
-        case "UnknownErrorException":
-          reason = new _util.UnknownErrorException(ex.message, ex.details);
-          break;
-      }
-
-      loadingTask._capability.reject(reason);
+    messageHandler.on("DocException", ex => {
+      loadingTask._capability.reject(wrapReason(ex));
     });
-    messageHandler.on("PasswordRequest", exception => {
-      this._passwordCapability = (0, _util.createPromiseCapability)();
-
-      if (loadingTask.onPassword) {
-        const updatePassword = password => {
-          this._passwordCapability.resolve({
-            password
-          });
-        };
-
-        try {
-          loadingTask.onPassword(updatePassword, exception.code);
-        } catch (ex) {
-          this._passwordCapability.reject(ex);
+    messageHandler.on("PasswordRequest", ex => {
+      this.#passwordCapability = Promise.withResolvers();
+      try {
+        if (!loadingTask.onPassword) {
+          throw wrapReason(ex);
         }
-      } else {
-        this._passwordCapability.reject(new _util.PasswordException(exception.message, exception.code));
+        const updatePassword = password => {
+          if (password instanceof Error) {
+            this.#passwordCapability.reject(password);
+          } else {
+            this.#passwordCapability.resolve({
+              password
+            });
+          }
+        };
+        loadingTask.onPassword(updatePassword, ex.code);
+      } catch (err) {
+        this.#passwordCapability.reject(err);
       }
-
-      return this._passwordCapability.promise;
+      return this.#passwordCapability.promise;
     });
     messageHandler.on("DataLoaded", data => {
-      if (loadingTask.onProgress) {
-        loadingTask.onProgress({
-          loaded: data.length,
-          total: data.length
-        });
-      }
-
+      this.#onProgress({
+        loaded: data.length,
+        total: data.length
+      });
       this.downloadInfoCapability.resolve(data);
     });
     messageHandler.on("StartRenderPage", data => {
       if (this.destroyed) {
         return;
       }
-
-      const page = this.pageCache[data.pageIndex];
-
-      page._startRenderPage(data.transparency, data.intent);
+      const page = this.#pageCache.get(data.pageProxyId);
+      page._startRenderPage(data.transparency, data.cacheKey);
     });
-    messageHandler.on("commonobj", data => {
+    const objectHandler = new ObjectHandler({
+      messageHandler,
+      commonObjs: this.commonObjs,
+      fontLoader: this.fontLoader,
+      pageCache: this.#pageCache,
+      pdfBug: this._params.pdfBug
+    });
+    this.rendererWorker?.promise.then(() => {
+      this.rendererWorker?.messageHandler?.on("FontFallback", data => this.destroyed ? null : messageHandler.sendWithPromise("FontFallback", data));
+    }, () => {});
+    messageHandler.on("commonobj", ([id, type, exportedData]) => {
+      if (this.destroyed) {
+        return null;
+      }
+      const {
+        rendererWorker
+      } = this;
+      if (type === "CopyLocalImage") {
+        if (this.commonObjs.has(id)) {
+          return null;
+        }
+        const dataLen = objectHandler.resolveCommonObject(id, type, exportedData);
+        if (dataLen) {
+          rendererWorker?.sendCommonObj(id, "Image", this.commonObjs.get(id));
+        }
+        return dataLen;
+      }
+      rendererWorker?.sendCommonObj(id, type, exportedData);
+      if (!this.commonObjs.has(id)) {
+        objectHandler.resolveCommonObject(id, type, exportedData);
+        if (type === "Pattern" && this.commonObjs.get(id)[0] === "Mesh") {
+          this.#hasMeshPattern = true;
+        }
+      }
+      return null;
+    });
+    messageHandler.on("obj", ([id, pageProxyId, type, imageData]) => {
       if (this.destroyed) {
         return;
       }
-
-      const [id, type, exportedData] = data;
-
-      if (this.commonObjs.has(id)) {
-        return;
+      if (type === "Pattern" && imageData[0] === "Mesh") {
+        this.#hasMeshPattern = true;
       }
-
-      switch (type) {
-        case "Font":
-          const params = this._params;
-
-          if ("error" in exportedData) {
-            const exportedError = exportedData.error;
-            (0, _util.warn)(`Error during font loading: ${exportedError}`);
-            this.commonObjs.resolve(id, exportedError);
-            break;
-          }
-
-          let fontRegistry = null;
-
-          if (params.pdfBug && globalThis.FontInspector && globalThis.FontInspector.enabled) {
-            fontRegistry = {
-              registerFont(font, url) {
-                globalThis.FontInspector.fontAdded(font, url);
-              }
-
-            };
-          }
-
-          const font = new _font_loader.FontFaceObject(exportedData, {
-            isEvalSupported: params.isEvalSupported,
-            disableFontFace: params.disableFontFace,
-            ignoreErrors: params.ignoreErrors,
-            onUnsupportedFeature: this._onUnsupportedFeature.bind(this),
-            fontRegistry
-          });
-          this.fontLoader.bind(font).then(() => {
-            this.commonObjs.resolve(id, font);
-          }, reason => {
-            messageHandler.sendWithPromise("FontFallback", {
-              id
-            }).finally(() => {
-              this.commonObjs.resolve(id, font);
-            });
-          });
-          break;
-
-        case "FontPath":
-        case "FontType3Res":
-          this.commonObjs.resolve(id, exportedData);
-          break;
-
-        default:
-          throw new Error(`Got unknown common object type ${type}`);
+      if (objectHandler.resolveObject(id, pageProxyId, type, imageData)) {
+        this.rendererWorker?.sendObj(id, pageProxyId, type, imageData);
       }
-    });
-    messageHandler.on("obj", data => {
-      if (this.destroyed) {
-        return undefined;
-      }
-
-      const [id, pageIndex, type, imageData] = data;
-      const pageProxy = this.pageCache[pageIndex];
-
-      if (pageProxy.objs.has(id)) {
-        return undefined;
-      }
-
-      switch (type) {
-        case "JpegStream":
-          return new Promise((resolve, reject) => {
-            const img = new Image();
-
-            img.onload = function () {
-              resolve(img);
-            };
-
-            img.onerror = function () {
-              reject(new Error("Error during JPEG image loading"));
-              (0, _display_utils.releaseImageResources)(img);
-            };
-
-            img.src = imageData;
-          }).then(img => {
-            pageProxy.objs.resolve(id, img);
-          });
-
-        case "Image":
-          pageProxy.objs.resolve(id, imageData);
-          const MAX_IMAGE_SIZE_TO_STORE = 8000000;
-
-          if (imageData && "data" in imageData && imageData.data.length > MAX_IMAGE_SIZE_TO_STORE) {
-            pageProxy.cleanupAfterRender = true;
-          }
-
-          break;
-
-        default:
-          throw new Error(`Got unknown object type ${type}`);
-      }
-
-      return undefined;
     });
     messageHandler.on("DocProgress", data => {
       if (this.destroyed) {
         return;
       }
-
-      if (loadingTask.onProgress) {
-        loadingTask.onProgress({
-          loaded: data.loaded,
-          total: data.total
-        });
-      }
+      this.#onProgress(data);
     });
-    messageHandler.on("UnsupportedFeature", this._onUnsupportedFeature.bind(this));
-    messageHandler.on("JpegDecode", data => {
+    messageHandler.on("FetchBinaryData", async data => {
       if (this.destroyed) {
-        return Promise.reject(new Error("Worker was destroyed"));
+        throw new Error("Worker was destroyed.");
       }
-
-      if (typeof document === "undefined") {
-        return Promise.reject(new Error('"document" is not defined.'));
+      if (!this.binaryDataFactory) {
+        throw new Error("`BinaryDataFactory` not initialized, see the `useWorkerFetch` parameter.");
       }
-
-      const [imageUrl, components] = data;
-
-      if (components !== 3 && components !== 1) {
-        return Promise.reject(new Error("Only 3 components or 1 component can be returned"));
-      }
-
-      return new Promise(function (resolve, reject) {
-        const img = new Image();
-
-        img.onload = function () {
-          const {
-            width,
-            height
-          } = img;
-          const size = width * height;
-          const rgbaLength = size * 4;
-          const buf = new Uint8ClampedArray(size * components);
-          let tmpCanvas = document.createElement("canvas");
-          tmpCanvas.width = width;
-          tmpCanvas.height = height;
-          let tmpCtx = tmpCanvas.getContext("2d");
-          tmpCtx.drawImage(img, 0, 0);
-          const data = tmpCtx.getImageData(0, 0, width, height).data;
-
-          if (components === 3) {
-            for (let i = 0, j = 0; i < rgbaLength; i += 4, j += 3) {
-              buf[j] = data[i];
-              buf[j + 1] = data[i + 1];
-              buf[j + 2] = data[i + 2];
-            }
-          } else if (components === 1) {
-            for (let i = 0, j = 0; i < rgbaLength; i += 4, j++) {
-              buf[j] = data[i];
-            }
-          }
-
-          resolve({
-            data: buf,
-            width,
-            height
-          });
-          (0, _display_utils.releaseImageResources)(img);
-          tmpCanvas.width = 0;
-          tmpCanvas.height = 0;
-          tmpCanvas = null;
-          tmpCtx = null;
-        };
-
-        img.onerror = function () {
-          reject(new Error("JpegDecode failed to load image"));
-          (0, _display_utils.releaseImageResources)(img);
-        };
-
-        img.src = imageUrl;
-      });
-    });
-    messageHandler.on("FetchBuiltInCMap", (data, sink) => {
-      if (this.destroyed) {
-        sink.error(new Error("Worker was destroyed"));
-        return;
-      }
-
-      let fetched = false;
-
-      sink.onPull = () => {
-        if (fetched) {
-          sink.close();
-          return;
-        }
-
-        fetched = true;
-        this.CMapReaderFactory.fetch(data).then(function (builtInCMap) {
-          sink.enqueue(builtInCMap, 1, [builtInCMap.cMapData.buffer]);
-        }).catch(function (reason) {
-          sink.error(reason);
-        });
-      };
+      return this.binaryDataFactory.fetch(data);
     });
   }
-
-  _onUnsupportedFeature({
-    featureId
-  }) {
-    if (this.destroyed) {
-      return;
-    }
-
-    if (this.loadingTask.onUnsupportedFeature) {
-      this.loadingTask.onUnsupportedFeature(featureId);
-    }
-  }
-
   getData() {
     return this.messageHandler.sendWithPromise("GetData", null);
   }
-
+  saveDocument(printToPDF = null) {
+    if (this.annotationStorage.size <= 0) {
+      warn("saveDocument called while `annotationStorage` is empty, " + "please use the getData-method instead.");
+    }
+    const {
+      map,
+      transfer
+    } = this.annotationStorage.serializable;
+    return this.messageHandler.sendWithPromise("SaveDocument", {
+      isPureXfa: !!this._htmlForXfa,
+      numPages: this._numPages,
+      annotationStorage: map,
+      supportsPrintToPDF: this.#printToPDF !== null,
+      filename: this.#fullReader?.filename ?? null
+    }, transfer).finally(() => {
+      this.#printToPDF = null;
+      this.annotationStorage.resetModified();
+    });
+  }
+  extractPages(pageInfos, copyLevels = null) {
+    const params = {
+      pageInfos
+    };
+    let transfer;
+    const ImageBitmapCtor = globalThis.ImageBitmap;
+    if (typeof ImageBitmapCtor === "function") {
+      const infos = Array.isArray(pageInfos) ? pageInfos : [pageInfos];
+      for (const pageInfo of infos) {
+        if (pageInfo?.image instanceof ImageBitmapCtor) {
+          (transfer ||= []).push(pageInfo.image);
+        }
+      }
+    }
+    if (this.annotationStorage.size > 0) {
+      const serialized = this.annotationStorage.serializable;
+      let {
+        map
+      } = serialized;
+      if (serialized.transfer?.length) {
+        if (transfer) {
+          transfer.push(...serialized.transfer);
+        } else {
+          transfer = serialized.transfer;
+        }
+      }
+      const mapping = this.pagesMapper.getMapping();
+      if (mapping) {
+        const remapped = new Map();
+        for (const [k, v] of map) {
+          if (v?.pageIndex !== undefined && v.pageIndex >= 0 && v.pageIndex < mapping.length) {
+            const copyLevel = copyLevels?.[v.pageIndex] ?? 0;
+            const sourceIdx = mapping[v.pageIndex] - 1;
+            if (sourceIdx !== v.pageIndex || copyLevel !== 0) {
+              remapped.set(k, {
+                ...v,
+                pageIndex: sourceIdx,
+                copyLevel
+              });
+              continue;
+            }
+          }
+          remapped.set(k, v);
+        }
+        map = remapped;
+      }
+      params.annotationStorage = map;
+    }
+    return this.messageHandler.sendWithPromise("ExtractPages", params, transfer).finally(() => {
+      this.annotationStorage.resetModified();
+    });
+  }
+  waitForGPU() {
+    return this._params.enableWebGPU && this.#hasMeshPattern && !isGPUReady() ? initGPU() : null;
+  }
   getPage(pageNumber) {
-    if (!Number.isInteger(pageNumber) || pageNumber <= 0 || pageNumber > this._numPages) {
-      return Promise.reject(new Error("Invalid page request"));
+    if (!Number.isInteger(pageNumber) || pageNumber <= 0 || pageNumber > this.pagesMapper.pagesNumber) {
+      return Promise.reject(new Error("Invalid page request."));
     }
-
     const pageIndex = pageNumber - 1;
-
-    if (pageIndex in this.pagePromises) {
-      return this.pagePromises[pageIndex];
+    const newPageIndex = this.pagesMapper.getPageId(pageNumber) - 1;
+    const cachedPromise = this.#pagePromises.get(pageIndex);
+    if (cachedPromise) {
+      return cachedPromise;
     }
-
     const promise = this.messageHandler.sendWithPromise("GetPage", {
-      pageIndex
+      pageIndex: newPageIndex
     }).then(pageInfo => {
       if (this.destroyed) {
         throw new Error("Transport destroyed");
       }
-
-      const page = new PDFPageProxy(pageIndex, pageInfo, this, this._params.pdfBug);
-      this.pageCache[pageIndex] = page;
+      if (pageInfo.refStr) {
+        this.#pageRefCache.set(pageInfo.refStr, newPageIndex);
+      }
+      const page = new PDFPageProxy(pageIndex, pageInfo, this, this.pagesMapper, this._params.pdfBug);
+      this.#pageCache.set(page._id, page);
       return page;
     });
-    this.pagePromises[pageIndex] = promise;
+    this.#pagePromises.set(pageIndex, promise);
     return promise;
   }
-
-  getPageIndex(ref) {
-    return this.messageHandler.sendWithPromise("GetPageIndex", {
-      ref
-    }).catch(function (reason) {
-      return Promise.reject(new Error(reason));
+  async getPageIndex(ref) {
+    if (!isRefProxy(ref)) {
+      throw new Error("Invalid pageIndex request.");
+    }
+    const index = await this.messageHandler.sendWithPromise("GetPageIndex", {
+      num: ref.num,
+      gen: ref.gen
     });
+    const pageNumber = this.pagesMapper.getPageNumber(index + 1);
+    if (pageNumber === 0) {
+      throw new Error("GetPageIndex: page has been removed.");
+    }
+    return pageNumber - 1;
   }
-
   getAnnotations(pageIndex, intent) {
     return this.messageHandler.sendWithPromise("GetAnnotations", {
-      pageIndex,
+      pageIndex: this.pagesMapper.getPageId(pageIndex + 1) - 1,
       intent
     });
   }
-
+  getFieldObjects() {
+    return this.#cacheSimpleMethod("GetFieldObjects");
+  }
+  getSignatures() {
+    return this.#cacheSimpleMethod("GetSignatures");
+  }
+  getSignatureData(id) {
+    return this.messageHandler.sendWithPromise("GetSignatureData", id);
+  }
+  hasJSActions() {
+    return this.#cacheSimpleMethod("HasJSActions");
+  }
+  getCalculationOrderIds() {
+    return this.messageHandler.sendWithPromise("GetCalculationOrderIds", null);
+  }
   getDestinations() {
     return this.messageHandler.sendWithPromise("GetDestinations", null);
   }
-
   getDestination(id) {
-    if (typeof id !== "string") {
-      return Promise.reject(new Error("Invalid destination request."));
-    }
-
-    return this.messageHandler.sendWithPromise("GetDestination", {
+    return typeof id !== "string" ? Promise.reject(new Error("Invalid destination request.")) : this.messageHandler.sendWithPromise("GetDestination", {
       id
     });
   }
-
   getPageLabels() {
     return this.messageHandler.sendWithPromise("GetPageLabels", null);
   }
-
   getPageLayout() {
     return this.messageHandler.sendWithPromise("GetPageLayout", null);
   }
-
   getPageMode() {
     return this.messageHandler.sendWithPromise("GetPageMode", null);
   }
-
   getViewerPreferences() {
     return this.messageHandler.sendWithPromise("GetViewerPreferences", null);
   }
-
   getOpenAction() {
     return this.messageHandler.sendWithPromise("GetOpenAction", null);
   }
-
   getAttachments() {
     return this.messageHandler.sendWithPromise("GetAttachments", null);
   }
-
-  getJavaScript() {
-    return this.messageHandler.sendWithPromise("GetJavaScript", null);
+  getAttachmentContent(id) {
+    return this.messageHandler.sendWithPromise("GetAttachmentContent", id);
   }
-
+  getAnnotationsByType(types, pageIndexesToSkip) {
+    return this.messageHandler.sendWithPromise("GetAnnotationsByType", {
+      types,
+      pageIndexesToSkip
+    });
+  }
+  getDocJSActions() {
+    return this.#cacheSimpleMethod("GetDocJSActions");
+  }
+  getPageJSActions(pageIndex) {
+    return this.messageHandler.sendWithPromise("GetPageJSActions", {
+      pageIndex: this.pagesMapper.getPageId(pageIndex + 1) - 1
+    });
+  }
+  getStructTree(pageIndex) {
+    return this.messageHandler.sendWithPromise("GetStructTree", {
+      pageIndex: this.pagesMapper.getPageId(pageIndex + 1) - 1
+    });
+  }
   getOutline() {
     return this.messageHandler.sendWithPromise("GetOutline", null);
   }
-
+  getOptionalContentConfig(renderingIntent) {
+    const name = "GetOptionalContentConfig";
+    return this.#methodPromises.getOrInsertComputed(name, () => this.messageHandler.sendWithPromise(name, null).catch(reason => {
+      warn(`${name}: "${reason}".`);
+      return null;
+    })).then(data => new OptionalContentConfig(data, renderingIntent));
+  }
   getPermissions() {
     return this.messageHandler.sendWithPromise("GetPermissions", null);
   }
-
   getMetadata() {
-    return this.messageHandler.sendWithPromise("GetMetadata", null).then(results => {
-      return {
-        info: results[0],
-        metadata: results[1] ? new _metadata.Metadata(results[1]) : null,
-        contentDispositionFilename: this._fullReader ? this._fullReader.filename : null
-      };
-    });
+    const name = "GetMetadata";
+    return this.#methodPromises.getOrInsertComputed(name, () => this.messageHandler.sendWithPromise(name, null).then(results => ({
+      info: results[0],
+      metadata: results[1] ? new Metadata(results[1]) : null,
+      contentDispositionFilename: this.#fullReader?.filename ?? null,
+      contentLength: this.#fullReader?.contentLength ?? null,
+      hasStructTree: results[2]
+    })));
   }
-
-  getStats() {
-    return this.messageHandler.sendWithPromise("GetStats", null);
+  getMarkInfo() {
+    return this.messageHandler.sendWithPromise("GetMarkInfo", null);
   }
-
-  startCleanup() {
-    return this.messageHandler.sendWithPromise("Cleanup", null).then(() => {
-      for (let i = 0, ii = this.pageCache.length; i < ii; i++) {
-        const page = this.pageCache[i];
-
-        if (page) {
-          const cleanupSuccessful = page.cleanup();
-
-          if (!cleanupSuccessful) {
-            throw new Error(`startCleanup: Page ${i + 1} is currently rendering.`);
-          }
-        }
-      }
-
-      this.commonObjs.clear();
-      this.fontLoader.clear();
-    });
-  }
-
-  get loadingParams() {
-    const params = this._params;
-    return (0, _util.shadow)(this, "loadingParams", {
-      disableAutoFetch: params.disableAutoFetch,
-      disableCreateObjectURL: params.disableCreateObjectURL,
-      disableFontFace: params.disableFontFace,
-      nativeImageDecoderSupport: params.nativeImageDecoderSupport
-    });
-  }
-
-}
-
-class PDFObjects {
-  constructor() {
-    this._objs = Object.create(null);
-  }
-
-  _ensureObj(objId) {
-    if (this._objs[objId]) {
-      return this._objs[objId];
+  async startCleanup(keepLoadedFonts = false) {
+    if (this.destroyed) {
+      return;
     }
-
-    return this._objs[objId] = {
-      capability: (0, _util.createPromiseCapability)(),
-      data: null,
-      resolved: false
-    };
+    await this.messageHandler.sendWithPromise("Cleanup", null);
+    for (const page of this.#pageCache.values()) {
+      const cleanupSuccessful = page.cleanup();
+      if (!cleanupSuccessful) {
+        throw new Error(`startCleanup: Page ${page.pageNumber} is currently rendering.`);
+      }
+    }
+    this.commonObjs.clear();
+    if (!keepLoadedFonts) {
+      this.fontLoader.clear();
+    }
+    this.rendererWorker?.cleanup(keepLoadedFonts);
+    this.#methodPromises.clear();
+    this.filterFactory.destroy(true);
+    TextLayer.cleanup();
   }
-
-  get(objId, callback = null) {
-    if (callback) {
-      this._ensureObj(objId).capability.promise.then(callback);
-
+  cleanupPage(pageProxyId) {
+    if (!this.destroyed) {
+      this.messageHandler.send("CleanupPage", {
+        pageProxyId
+      });
+    }
+    this.rendererWorker?.cleanupPage(pageProxyId);
+  }
+  cachedPageNumber(ref) {
+    if (!isRefProxy(ref)) {
       return null;
     }
-
-    const obj = this._objs[objId];
-
-    if (!obj || !obj.resolved) {
-      throw new Error(`Requesting object that isn't resolved yet ${objId}.`);
-    }
-
-    return obj.data;
-  }
-
-  has(objId) {
-    const obj = this._objs[objId];
-    return obj ? obj.resolved : false;
-  }
-
-  resolve(objId, data) {
-    const obj = this._ensureObj(objId);
-
-    obj.resolved = true;
-    obj.data = data;
-    obj.capability.resolve(data);
-  }
-
-  clear() {
-    for (const objId in this._objs) {
-      const {
-        data
-      } = this._objs[objId];
-
-      if (typeof Image !== "undefined" && data instanceof Image) {
-        (0, _display_utils.releaseImageResources)(data);
+    const refStr = ref.gen === 0 ? `${ref.num}R` : `${ref.num}R${ref.gen}`;
+    const pageIndex = this.#pageRefCache.get(refStr);
+    if (pageIndex >= 0) {
+      const pageNumber = this.pagesMapper.getPageNumber(pageIndex + 1);
+      if (pageNumber !== 0) {
+        return pageNumber;
       }
     }
-
-    this._objs = Object.create(null);
+    return null;
   }
-
 }
-
 class RenderTask {
+  _internalRenderTask = null;
+  onContinue = null;
+  onError = null;
+  onFrame = null;
   constructor(internalRenderTask) {
     this._internalRenderTask = internalRenderTask;
-    this.onContinue = null;
   }
-
   get promise() {
     return this._internalRenderTask.capability.promise;
   }
-
-  cancel() {
-    this._internalRenderTask.cancel();
+  cancel(extraDelay = 0) {
+    this._internalRenderTask.cancel(null, extraDelay);
   }
-
-  then(onFulfilled, onRejected) {
-    throw new Error("Removed API method: " + "RenderTask.then, use the `promise` getter instead.");
-  }
-
-}
-
-const InternalRenderTask = function InternalRenderTaskClosure() {
-  const canvasInRendering = new WeakSet();
-
-  class InternalRenderTask {
-    constructor({
-      callback,
-      params,
-      objs,
-      commonObjs,
-      operatorList,
-      pageIndex,
-      canvasFactory,
-      webGLContext,
-      useRequestAnimationFrame = false,
-      pdfBug = false
-    }) {
-      this.callback = callback;
-      this.params = params;
-      this.objs = objs;
-      this.commonObjs = commonObjs;
-      this.operatorListIdx = null;
-      this.operatorList = operatorList;
-      this._pageIndex = pageIndex;
-      this.canvasFactory = canvasFactory;
-      this.webGLContext = webGLContext;
-      this._pdfBug = pdfBug;
-      this.running = false;
-      this.graphicsReadyCallback = null;
-      this.graphicsReady = false;
-      this._useRequestAnimationFrame = useRequestAnimationFrame === true && typeof window !== "undefined";
-      this.cancelled = false;
-      this.capability = (0, _util.createPromiseCapability)();
-      this.task = new RenderTask(this);
-      this._continueBound = this._continue.bind(this);
-      this._scheduleNextBound = this._scheduleNext.bind(this);
-      this._nextBound = this._next.bind(this);
-      this._canvas = params.canvasContext.canvas;
+  get separateAnnots() {
+    const {
+      separateAnnots
+    } = this._internalRenderTask.operatorList;
+    if (!separateAnnots) {
+      return false;
     }
-
-    initializeGraphics(transparency = false) {
+    const {
+      annotationCanvasMap
+    } = this._internalRenderTask;
+    return separateAnnots.form || separateAnnots.canvas && annotationCanvasMap?.size > 0;
+  }
+  get imageCoordinates() {
+    return this._internalRenderTask.imageCoordinates || null;
+  }
+  get isWorkerRendering() {
+    return this._internalRenderTask.isWorkerRendering;
+  }
+}
+class InternalRenderTask {
+  #dependencyTracker = null;
+  #imagesTracker = null;
+  #rAF = null;
+  #rendererTask = null;
+  #waitForGPU = null;
+  static #canvasInUse = new WeakSet();
+  constructor({
+    callback,
+    params,
+    objs,
+    commonObjs,
+    annotationCanvasMap,
+    operatorList,
+    pageIndex,
+    pageProxyId,
+    canvasFactory,
+    filterFactory,
+    useRequestAnimationFrame = false,
+    pdfBug = false,
+    pageColors = null,
+    operationsFilter = null,
+    rendererWorker = null,
+    waitForGPU = null
+  }) {
+    this.callback = callback;
+    this.params = params;
+    this.objs = objs;
+    this.commonObjs = commonObjs;
+    this.annotationCanvasMap = annotationCanvasMap;
+    this.operatorListIdx = null;
+    this.operatorList = operatorList;
+    this._pageIndex = pageIndex;
+    this.canvasFactory = canvasFactory;
+    this.filterFactory = filterFactory;
+    this._pdfBug = pdfBug;
+    this.pageColors = pageColors;
+    this.running = false;
+    this.graphicsReadyCallback = null;
+    this.graphicsReady = false;
+    this._useRequestAnimationFrame = useRequestAnimationFrame === true && typeof window !== "undefined";
+    this.cancelled = false;
+    this.capability = Promise.withResolvers();
+    this.task = new RenderTask(this);
+    this._cancelBound = this.cancel.bind(this);
+    this._continueBound = this._continue.bind(this);
+    this._scheduleNextBound = this._scheduleNext.bind(this);
+    this._nextBound = this._next.bind(this);
+    this._canvas = params.canvas;
+    this._canvasContext = params.canvas ? null : params.canvasContext;
+    this._operationsFilter = operationsFilter;
+    this.#waitForGPU = waitForGPU;
+    this.#rendererTask = rendererWorker?.createRenderTask({
+      pageProxyId,
+      operatorList,
+      params,
+      pageColors,
+      canvasFactory,
+      annotationCanvasMap,
+      onFrame: () => this.task.onFrame?.(),
+      onError: reason => this.cancel(reason)
+    }) ?? null;
+  }
+  get completed() {
+    return this.capability.promise.catch(() => {});
+  }
+  get isWorkerRendering() {
+    return !!this.#rendererTask;
+  }
+  get imageCoordinates() {
+    return this.#rendererTask ? this.#rendererTask.imageCoordinates : this.#imagesTracker?.take();
+  }
+  get recordedBBoxes() {
+    return this.#rendererTask ? this.#rendererTask.recordedBBoxes : this.#dependencyTracker?.take();
+  }
+  get debugMetadata() {
+    return this.#dependencyTracker?.takeDebugMetadata() ?? null;
+  }
+  async initializeGraphics({
+    transparency = false,
+    optionalContentConfig
+  }) {
+    if (this.cancelled) {
+      return;
+    }
+    if (this._canvas) {
+      if (InternalRenderTask.#canvasInUse.has(this._canvas)) {
+        throw new Error("Cannot use the same canvas during multiple render() operations. " + "Use different canvas or ensure previous operations were " + "cancelled or completed.");
+      }
+      InternalRenderTask.#canvasInUse.add(this._canvas);
+    }
+    if (this._pdfBug && globalThis.StepperManager?.enabled) {
+      this.stepper = globalThis.StepperManager.create(this._pageIndex);
+      this.stepper.init(this.operatorList);
+      this.stepper.nextBreakPoint = this.stepper.getNextBreakPoint();
+    }
+    if (this.#rendererTask) {
+      const initialized = await this.#rendererTask.initialize(transparency, optionalContentConfig);
       if (this.cancelled) {
         return;
       }
-
-      if (this._canvas) {
-        if (canvasInRendering.has(this._canvas)) {
-          throw new Error("Cannot use the same canvas during multiple render() operations. " + "Use different canvas or ensure previous operations were " + "cancelled or completed.");
-        }
-
-        canvasInRendering.add(this._canvas);
+      if (!initialized) {
+        this.#rendererTask = null;
       }
-
-      if (this._pdfBug && globalThis.StepperManager && globalThis.StepperManager.enabled) {
-        this.stepper = globalThis.StepperManager.create(this._pageIndex);
-        this.stepper.init(this.operatorList);
-        this.stepper.nextBreakPoint = this.stepper.getNextBreakPoint();
-      }
-
+    }
+    if (!this.#rendererTask) {
       const {
-        canvasContext,
         viewport,
         transform,
-        imageLayer,
-        background
+        background,
+        recordOperations,
+        recordImages,
+        recordForDebugger
       } = this.params;
-      this.gfx = new _canvas.CanvasGraphics(canvasContext, this.commonObjs, this.objs, this.canvasFactory, this.webGLContext, imageLayer);
+      const canvasContext = this._canvasContext || this.canvasFactory.getNoAlphaContext(this._canvas);
+      const {
+        dependencyTracker,
+        imagesTracker
+      } = createCanvasTrackers(this._canvas, this.operatorList.fnArray.length, {
+        recordOperations,
+        recordImages,
+        recordDebugMetadata: recordForDebugger
+      });
+      this.#dependencyTracker = dependencyTracker;
+      this.#imagesTracker = imagesTracker;
+      this.gfx = new CanvasGraphics(canvasContext, this.commonObjs, this.objs, this.canvasFactory, this.filterFactory, {
+        optionalContentConfig
+      }, this.annotationCanvasMap, this.pageColors, dependencyTracker, imagesTracker);
       this.gfx.beginDrawing({
         transform,
         viewport,
         transparency,
         background
       });
-      this.operatorListIdx = 0;
-      this.graphicsReady = true;
-
-      if (this.graphicsReadyCallback) {
-        this.graphicsReadyCallback();
-      }
     }
-
-    cancel(error = null) {
-      this.running = false;
-      this.cancelled = true;
-
-      if (this.gfx) {
-        this.gfx.endDrawing();
-      }
-
-      if (this._canvas) {
-        canvasInRendering.delete(this._canvas);
-      }
-
-      this.callback(error || new _display_utils.RenderingCancelledException(`Rendering cancelled, page ${this._pageIndex + 1}`, "canvas"));
-    }
-
-    operatorListChanged() {
-      if (!this.graphicsReady) {
-        if (!this.graphicsReadyCallback) {
-          this.graphicsReadyCallback = this._continueBound;
-        }
-
-        return;
-      }
-
-      if (this.stepper) {
-        this.stepper.updateOperatorList(this.operatorList);
-      }
-
-      if (this.running) {
-        return;
-      }
-
-      this._continue();
-    }
-
-    _continue() {
-      this.running = true;
-
-      if (this.cancelled) {
-        return;
-      }
-
-      if (this.task.onContinue) {
-        this.task.onContinue(this._scheduleNextBound);
-      } else {
-        this._scheduleNext();
-      }
-    }
-
-    _scheduleNext() {
-      if (this._useRequestAnimationFrame) {
-        window.requestAnimationFrame(() => {
-          this._nextBound().catch(this.cancel.bind(this));
-        });
-      } else {
-        Promise.resolve().then(this._nextBound).catch(this.cancel.bind(this));
-      }
-    }
-
-    async _next() {
-      if (this.cancelled) {
-        return;
-      }
-
-      this.operatorListIdx = this.gfx.executeOperatorList(this.operatorList, this.operatorListIdx, this._continueBound, this.stepper);
-
-      if (this.operatorListIdx === this.operatorList.argsArray.length) {
-        this.running = false;
-
-        if (this.operatorList.lastChunk) {
-          this.gfx.endDrawing();
-
-          if (this._canvas) {
-            canvasInRendering.delete(this._canvas);
-          }
-
-          this.callback();
-        }
-      }
-    }
-
+    this.operatorListIdx = 0;
+    this.graphicsReady = true;
+    this.graphicsReadyCallback?.();
   }
-
-  return InternalRenderTask;
-}();
-
-const version = '2.4.456';
-exports.version = version;
-const build = '228a591c';
-exports.build = build;
+  cancel(error = null, extraDelay = 0) {
+    this.running = false;
+    this.cancelled = true;
+    this.#rendererTask?.cancel();
+    this.gfx?.endDrawing();
+    if (this.#rAF) {
+      window.cancelAnimationFrame(this.#rAF);
+      this.#rAF = null;
+    }
+    InternalRenderTask.#canvasInUse.delete(this._canvas);
+    error ||= new RenderingCancelledException(`Rendering cancelled, page ${this._pageIndex + 1}`, extraDelay);
+    this.callback(error);
+    this.task.onError?.(error);
+  }
+  operatorListChanged() {
+    if (!this.graphicsReady) {
+      this.graphicsReadyCallback ||= this._continueBound;
+      return;
+    }
+    this.#dependencyTracker?.growOperationsCount(this.operatorList.fnArray.length);
+    this.stepper?.updateOperatorList(this.operatorList);
+    if (this.running) {
+      return;
+    }
+    this._continue();
+  }
+  _continue() {
+    this.running = true;
+    if (this.cancelled) {
+      return;
+    }
+    if (this.task.onContinue) {
+      this.task.onContinue(this._scheduleNextBound);
+    } else {
+      this._scheduleNext();
+    }
+  }
+  _scheduleNext() {
+    if (this._useRequestAnimationFrame) {
+      this.#rAF = window.requestAnimationFrame(() => {
+        this.#rAF = null;
+        this._nextBound().catch(this._cancelBound);
+      });
+    } else {
+      Promise.resolve().then(this._nextBound).catch(this._cancelBound);
+    }
+  }
+  async _next() {
+    if (this.cancelled) {
+      return;
+    }
+    if (!this.#rendererTask) {
+      const gpuPromise = this.#waitForGPU?.();
+      if (gpuPromise) {
+        await gpuPromise;
+        if (this.cancelled) {
+          return;
+        }
+      }
+    }
+    const {
+      operatorList
+    } = this;
+    const {
+      lastChunk
+    } = operatorList;
+    if (this.#rendererTask) {
+      this.operatorListIdx = await this.#rendererTask.executeOperatorList(operatorList, this.operatorListIdx, this._operationsFilter);
+      if (this.cancelled) {
+        return;
+      }
+      if (this.operatorListIdx !== operatorList.argsArray.length || lastChunk !== operatorList.lastChunk) {
+        this._continue();
+        return;
+      }
+    } else {
+      this.operatorListIdx = this.gfx.executeOperatorList(operatorList, this.operatorListIdx, this._continueBound, null, this.stepper, this._operationsFilter);
+    }
+    if (this.operatorListIdx === operatorList.argsArray.length) {
+      this.running = false;
+      if (lastChunk) {
+        this.gfx?.endDrawing();
+        InternalRenderTask.#canvasInUse.delete(this._canvas);
+        this.callback();
+      }
+    }
+  }
+}
+const version = "6.5.0";
+const build = "0a41533";
+export { build, getDocument, PDFDataRangeTransport, PDFDocumentLoadingTask, PDFDocumentProxy, PDFPageProxy, PDFWorker, RenderTask, version };

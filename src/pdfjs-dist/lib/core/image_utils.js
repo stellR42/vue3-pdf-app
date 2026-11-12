@@ -1,8 +1,4 @@
-/**
- * @licstart The following is the entire license notice for the
- * Javascript code in this page
- *
- * Copyright 2020 Mozilla Foundation
+/* Copyright 2024 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,80 +11,302 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
- * @licend The above is the entire license notice for the
- * Javascript code in this page
  */
-"use strict";
-
-Object.defineProperty(exports, "__esModule", {
-  value: true
-});
-exports.NativeImageDecoder = void 0;
-
-var _colorspace = require("./colorspace.js");
-
-var _jpeg_stream = require("./jpeg_stream.js");
-
-var _stream = require("./stream.js");
-
-class NativeImageDecoder {
-  constructor({
-    xref,
-    resources,
-    handler,
-    forceDataSchema = false,
-    pdfFunctionFactory
-  }) {
-    this.xref = xref;
-    this.resources = resources;
-    this.handler = handler;
-    this.forceDataSchema = forceDataSchema;
-    this.pdfFunctionFactory = pdfFunctionFactory;
+import "core-js/modules/es.map.get-or-insert.js";
+import "core-js/modules/es.map.get-or-insert-computed.js";
+import { assert, FeatureTest, makeSet, unreachable, warn } from "../shared/util.js";
+import { RefMap, RefSet } from "./primitives.js";
+class BaseLocalCache {
+  constructor(options) {
+    this._onlyRefs = options?.onlyRefs === true;
+    if (!this._onlyRefs) {
+      this._nameRefMap = new Map();
+      this._imageMap = new Map();
+    }
+    this._imageCache = new RefMap();
   }
-
-  canDecode(image) {
-    return image instanceof _jpeg_stream.JpegStream && NativeImageDecoder.isDecodable(image, this.xref, this.resources, this.pdfFunctionFactory) && image.maybeValidDimensions;
+  getByName(name) {
+    if (this._onlyRefs) {
+      unreachable("Should not call `getByName` method.");
+    }
+    const ref = this._nameRefMap.get(name);
+    return ref ? this.getByRef(ref) : this._imageMap.get(name) || null;
   }
-
-  decode(image) {
-    const dict = image.dict;
-    let colorSpace = dict.get("ColorSpace", "CS");
-    colorSpace = _colorspace.ColorSpace.parse(colorSpace, this.xref, this.resources, this.pdfFunctionFactory);
-    return this.handler.sendWithPromise("JpegDecode", [image.getIR(this.forceDataSchema), colorSpace.numComps]).then(function ({
-      data,
-      width,
-      height
-    }) {
-      return new _stream.Stream(data, 0, data.length, dict);
+  getByRef(ref) {
+    return this._imageCache.get(ref) || null;
+  }
+  set(name, ref, data) {
+    unreachable("Abstract method `set` called.");
+  }
+}
+class LocalImageCache extends BaseLocalCache {
+  set(name, ref = null, data) {
+    if (typeof name !== "string") {
+      throw new Error('LocalImageCache.set - expected "name" argument.');
+    }
+    if (ref) {
+      if (this._imageCache.has(ref)) {
+        return;
+      }
+      this._nameRefMap.set(name, ref);
+      this._imageCache.put(ref, data);
+      return;
+    }
+    if (this._imageMap.has(name)) {
+      return;
+    }
+    this._imageMap.set(name, data);
+  }
+}
+class LocalColorSpaceCache extends BaseLocalCache {
+  set(name = null, ref = null, data) {
+    if (typeof name !== "string" && !ref) {
+      throw new Error('LocalColorSpaceCache.set - expected "name" and/or "ref" argument.');
+    }
+    if (ref) {
+      if (this._imageCache.has(ref)) {
+        return;
+      }
+      if (name !== null) {
+        this._nameRefMap.set(name, ref);
+      }
+      this._imageCache.put(ref, data);
+      return;
+    }
+    if (this._imageMap.has(name)) {
+      return;
+    }
+    this._imageMap.set(name, data);
+  }
+}
+class LocalFunctionCache extends BaseLocalCache {
+  constructor(options) {
+    super({
+      onlyRefs: true
     });
   }
-
-  static isSupported(image, xref, res, pdfFunctionFactory) {
-    const dict = image.dict;
-
-    if (dict.has("DecodeParms") || dict.has("DP")) {
-      return false;
+  set(name = null, ref, data) {
+    if (!ref) {
+      throw new Error('LocalFunctionCache.set - expected "ref" argument.');
     }
-
-    const cs = _colorspace.ColorSpace.parse(dict.get("ColorSpace", "CS"), xref, res, pdfFunctionFactory);
-
-    return (cs.name === "DeviceGray" || cs.name === "DeviceRGB") && cs.isDefaultDecode(dict.getArray("Decode", "D"));
-  }
-
-  static isDecodable(image, xref, res, pdfFunctionFactory) {
-    const dict = image.dict;
-
-    if (dict.has("DecodeParms") || dict.has("DP")) {
-      return false;
+    if (this._imageCache.has(ref)) {
+      return;
     }
-
-    const cs = _colorspace.ColorSpace.parse(dict.get("ColorSpace", "CS"), xref, res, pdfFunctionFactory);
-
-    const bpc = dict.get("BitsPerComponent", "BPC") || 1;
-    return (cs.numComps === 1 || cs.numComps === 3) && cs.isDefaultDecode(dict.getArray("Decode", "D"), bpc);
+    this._imageCache.put(ref, data);
   }
-
 }
-
-exports.NativeImageDecoder = NativeImageDecoder;
+class LocalGStateCache extends BaseLocalCache {
+  set(name, ref = null, data) {
+    if (typeof name !== "string") {
+      throw new Error('LocalGStateCache.set - expected "name" argument.');
+    }
+    if (ref) {
+      if (this._imageCache.has(ref)) {
+        return;
+      }
+      this._nameRefMap.set(name, ref);
+      this._imageCache.put(ref, data);
+      return;
+    }
+    if (this._imageMap.has(name)) {
+      return;
+    }
+    this._imageMap.set(name, data);
+  }
+}
+class LocalTilingPatternCache extends BaseLocalCache {
+  constructor(options) {
+    super({
+      onlyRefs: true
+    });
+  }
+  set(name = null, ref, data) {
+    if (!ref) {
+      throw new Error('LocalTilingPatternCache.set - expected "ref" argument.');
+    }
+    if (this._imageCache.has(ref)) {
+      return;
+    }
+    this._imageCache.put(ref, data);
+  }
+}
+class RegionalImageCache extends BaseLocalCache {
+  constructor(options) {
+    super({
+      onlyRefs: true
+    });
+  }
+  set(name = null, ref, data) {
+    if (!ref) {
+      throw new Error('RegionalImageCache.set - expected "ref" argument.');
+    }
+    if (this._imageCache.has(ref)) {
+      return;
+    }
+    this._imageCache.put(ref, data);
+  }
+}
+class GlobalColorSpaceCache extends BaseLocalCache {
+  constructor(options) {
+    super({
+      onlyRefs: true
+    });
+  }
+  set(name = null, ref, data) {
+    if (!ref) {
+      throw new Error('GlobalColorSpaceCache.set - expected "ref" argument.');
+    }
+    if (this._imageCache.has(ref)) {
+      return;
+    }
+    this._imageCache.put(ref, data);
+  }
+  clear() {
+    this._imageCache.clear();
+  }
+}
+class GlobalImageCache {
+  static NUM_PAGES_THRESHOLD = 2;
+  static MIN_IMAGES_TO_CACHE = 10;
+  static MAX_BYTE_SIZE = 5e7;
+  #decodeFailedSet = new RefSet();
+  #decodedImages = new RefMap();
+  constructor() {
+    this._refCache = new RefMap();
+    this._imageCache = new RefMap();
+  }
+  get #byteSize() {
+    let byteSize = 0;
+    for (const imageData of this._imageCache) {
+      byteSize += imageData.byteSize;
+    }
+    return byteSize;
+  }
+  get #cacheLimitReached() {
+    return this._imageCache.size >= GlobalImageCache.MIN_IMAGES_TO_CACHE && this.#byteSize >= GlobalImageCache.MAX_BYTE_SIZE;
+  }
+  shouldCache(ref, pageIndex) {
+    const pageIndexSet = this._refCache.getOrPutComputed(ref, makeSet);
+    pageIndexSet.add(pageIndex);
+    if (pageIndexSet.size < GlobalImageCache.NUM_PAGES_THRESHOLD) {
+      return false;
+    }
+    if (!this._imageCache.has(ref) && this.#cacheLimitReached) {
+      return false;
+    }
+    return true;
+  }
+  addDecodeFailed(ref) {
+    this.#decodeFailedSet.put(ref);
+  }
+  hasDecodeFailed(ref) {
+    return this.#decodeFailedSet.has(ref);
+  }
+  startDecodedImage(ref, pageProxyId) {
+    if (!FeatureTest.isVideoFrameSupported) {
+      return;
+    }
+    if (!FeatureTest.platform.isFirefox) {
+      return;
+    }
+    this.#decodedImages.get(ref)?.imgData?.bitmap.close();
+    this.#decodedImages.put(ref, {
+      pageProxyId,
+      imgData: null
+    });
+  }
+  setDecodedImage(ref, imgData) {
+    const entry = this.#decodedImages.get(ref);
+    if (!entry || entry.imgData) {
+      return;
+    }
+    const {
+      bitmap
+    } = imgData;
+    try {
+      if (bitmap instanceof ImageBitmap) {
+        entry.imgData = {
+          ...imgData,
+          bitmap: new VideoFrame(bitmap, {
+            timestamp: 0
+          })
+        };
+      } else if (bitmap instanceof VideoFrame) {
+        entry.imgData = {
+          ...imgData,
+          bitmap: bitmap.clone()
+        };
+      }
+    } catch (reason) {
+      warn(`GlobalImageCache.setDecodedImage - "${reason}".`);
+    }
+    if (!entry.imgData) {
+      this.#decodedImages.remove(ref);
+    }
+  }
+  takeDecodedImage(ref) {
+    const imgData = this.#decodedImages.get(ref)?.imgData;
+    if (!imgData) {
+      return null;
+    }
+    this.#decodedImages.remove(ref);
+    return imgData;
+  }
+  cleanupPage(pageProxyId) {
+    for (const [ref, entry] of this.#decodedImages.items()) {
+      if (entry.pageProxyId === pageProxyId) {
+        entry.imgData?.bitmap.close();
+        this.#decodedImages.remove(ref);
+      }
+    }
+  }
+  addByteSize(ref, byteSize) {
+    const imageData = this._imageCache.get(ref);
+    if (!imageData) {
+      return;
+    }
+    if (imageData.byteSize) {
+      return;
+    }
+    imageData.byteSize = byteSize;
+  }
+  getData(ref, pageIndex) {
+    const pageIndexSet = this._refCache.get(ref);
+    if (!pageIndexSet || pageIndexSet.size < GlobalImageCache.NUM_PAGES_THRESHOLD) {
+      return null;
+    }
+    const imageData = this._imageCache.get(ref);
+    if (!imageData) {
+      return null;
+    }
+    pageIndexSet.add(pageIndex);
+    return imageData;
+  }
+  setData(ref, data) {
+    if (!this._refCache.has(ref)) {
+      throw new Error('GlobalImageCache.setData - expected "shouldCache" to have been called.');
+    }
+    if (this._imageCache.has(ref)) {
+      return;
+    }
+    if (this.#cacheLimitReached) {
+      warn("GlobalImageCache.setData - cache limit reached.");
+      return;
+    }
+    this._imageCache.put(ref, data);
+  }
+  clear(onlyData = false) {
+    if (!onlyData) {
+      this.#decodeFailedSet.clear();
+      this._refCache.clear();
+    }
+    this._imageCache.clear();
+    for (const {
+      imgData
+    } of this.#decodedImages.values()) {
+      imgData?.bitmap.close();
+    }
+    this.#decodedImages.clear();
+  }
+}
+export { GlobalColorSpaceCache, GlobalImageCache, LocalColorSpaceCache, LocalFunctionCache, LocalGStateCache, LocalImageCache, LocalTilingPatternCache, RegionalImageCache };

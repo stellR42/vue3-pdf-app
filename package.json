@@ -1,23 +1,39 @@
 {
   "name": "vue3-pdf-app",
-  "version": "1.0.3",
-  "description": "Vue 3 PDF viewer",
-  "main": "dist/vue3-pdf-app.umd.js",
-  "unpkg": "dist/vue3-pdf-app.umd.min.js",
-  "types": "./dist/types/components/pdf-viewer.vue.d.ts",
+  "version": "2.0.0-beta.0",
+  "description": "Vue 3 PDF viewer component built on the PDF.js 6.5 viewer: full toolbar, search, thumbnails, annotations, print and download. TypeScript types, nothing to host.",
+  "type": "module",
+  "module": "dist/vue3-pdf-app.js",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/vue3-pdf-app.js"
+    }
+  },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/stellR42/vue3-pdf-app"
+    "url": "git+https://github.com/stellR42/vue3-pdf-app.git"
   },
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "tag": "next"
+  },
   "keywords": [
     "vue",
+    "vue3",
     "vuejs",
-    "pdfjs",
+    "vue-component",
     "pdf",
-    "viewer"
+    "pdf-viewer",
+    "pdfjs",
+    "pdf.js",
+    "viewer",
+    "annotations",
+    "typescript",
+    "vite"
   ],
   "author": "stellR42",
   "license": "MIT",
@@ -26,43 +42,28 @@
   },
   "homepage": "https://github.com/stellR42/vue3-pdf-app#readme",
   "scripts": {
-    "serve": "vue-cli-service serve",
-    "build": "vue-cli-service build",
-    "build:lib": "vue-cli-service build --target lib src/components/pdf-viewer.vue && npm run build:types",
-    "build:icons": "webpack --config webpack-icons.config.js",
-    "build:types": "vue-tsc --build tsconfig.lib.json",
-    "build:npm": "npm run build:lib & npm run build:icons",
-    "lint": "vue-cli-service lint"
+    "dev": "vite",
+    "build": "vite build && npm run build:types",
+    "build:types": "vue-tsc -p tsconfig.lib.json && node scripts/clean-types.mjs",
+    "type-check": "vue-tsc --noEmit",
+    "update-pdfjs": "node scripts/update-pdfjs.mjs",
+    "format": "prettier --write .",
+    "prepublishOnly": "npm run type-check && npm run build"
   },
-  "dependencies": {},
   "peerDependencies": {
-    "vue": "^3.0.0"
+    "vue": "^3.2.0"
   },
   "devDependencies": {
-    "@mdi/font": "^7.0.96",
-    "@types/pdfjs-dist": "^2.10.378",
-    "@typescript-eslint/eslint-plugin": "^5.4.0",
-    "@typescript-eslint/parser": "^5.4.0",
-    "@vue/cli-plugin-babel": "~5.0.0",
-    "@vue/cli-plugin-eslint": "~5.0.0",
-    "@vue/cli-plugin-router": "~5.0.0",
-    "@vue/cli-plugin-typescript": "~5.0.0",
-    "@vue/cli-service": "~5.0.0",
-    "@vue/eslint-config-standard": "^6.1.0",
-    "@vue/eslint-config-typescript": "^9.1.0",
-    "core-js": "^3.8.3",
-    "eslint": "^7.32.0",
-    "eslint-plugin-import": "^2.25.3",
-    "eslint-plugin-node": "^11.1.0",
-    "eslint-plugin-promise": "^5.1.0",
-    "eslint-plugin-vue": "^8.0.3",
-    "mini-css-extract-plugin": "^2.6.1",
-    "sass": "^1.55.0",
-    "sass-loader": "^13.1.0",
-    "svg-url-loader": "^8.0.0",
-    "typescript": "~4.5.5",
-    "vue-router": "^4.0.3",
-    "vue-tsc": "^1.0.9",
-    "webpack-cli": "^4.10.0"
+    "@fluent/bundle": "^0.19.1",
+    "@fluent/dom": "^0.10.2",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "core-js": "^3.51.0",
+    "postcss": "^8.5.6",
+    "postcss-nested": "^7.0.2",
+    "prettier": "^3.10.0",
+    "typescript": "~5.8.3",
+    "vite": "^6.3.5",
+    "vue": "^3.5.17",
+    "vue-tsc": "^2.2.10"
   }
 }

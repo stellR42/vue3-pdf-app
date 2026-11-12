@@ -1,8 +1,4 @@
-/**
- * @licstart The following is the entire license notice for the
- * Javascript code in this page
- *
- * Copyright 2020 Mozilla Foundation
+/* Copyright 2024 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,677 +11,385 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
- * @licend The above is the entire license notice for the
- * Javascript code in this page
  */
-"use strict";
-
-Object.defineProperty(exports, "__esModule", {
-  value: true
-});
-exports.FontRendererFactory = void 0;
-
-var _util = require("../shared/util.js");
-
-var _cff_parser = require("./cff_parser.js");
-
-var _glyphlist = require("./glyphlist.js");
-
-var _encodings = require("./encodings.js");
-
-var _stream = require("./stream.js");
-
-var FontRendererFactory = function FontRendererFactoryClosure() {
-  function getLong(data, offset) {
-    return data[offset] << 24 | data[offset + 1] << 16 | data[offset + 2] << 8 | data[offset + 3];
+import "core-js/modules/es.array.push.js";
+import "core-js/modules/es.map.get-or-insert.js";
+import "core-js/modules/es.map.get-or-insert-computed.js";
+import "core-js/modules/es.set.difference.v2.js";
+import "core-js/modules/es.set.intersection.v2.js";
+import "core-js/modules/es.set.is-disjoint-from.v2.js";
+import "core-js/modules/es.set.is-subset-of.v2.js";
+import "core-js/modules/es.set.is-superset-of.v2.js";
+import "core-js/modules/es.set.symmetric-difference.v2.js";
+import "core-js/modules/es.set.union.v2.js";
+import "core-js/modules/es.typed-array.with.js";
+import "core-js/modules/es.uint8-array.set-from-base64.js";
+import "core-js/modules/es.uint8-array.set-from-hex.js";
+import "core-js/modules/es.uint8-array.to-base64.js";
+import "core-js/modules/es.uint8-array.to-hex.js";
+import { assert, bytesToString, DrawOPS, FeatureTest, FONT_IDENTITY_MATRIX, FormatError, shadow, unreachable, Util, warn } from "../shared/util.js";
+import { CFFParser } from "./cff_parser.js";
+import { compileFontPathInfo } from "./obj_bin_transform_core.js";
+import { getGlyphsUnicode } from "./glyphlist.js";
+import { isNumberArray } from "./core_utils.js";
+import { StandardEncoding } from "./encodings.js";
+import { Stream } from "./stream.js";
+function getFloat214(view, offset) {
+  return view.getInt16(offset) / 16384;
+}
+function getSubroutineBias(subrs) {
+  const numSubrs = subrs.length;
+  if (numSubrs >= 33900) {
+    return 32768;
   }
-
-  function getUshort(data, offset) {
-    return data[offset] << 8 | data[offset + 1];
-  }
-
-  function getSubroutineBias(subrs) {
-    const numSubrs = subrs.length;
-    let bias = 32768;
-
-    if (numSubrs < 1240) {
-      bias = 107;
-    } else if (numSubrs < 33900) {
-      bias = 1131;
-    }
-
-    return bias;
-  }
-
-  function parseCmap(data, start, end) {
-    var offset = getUshort(data, start + 2) === 1 ? getLong(data, start + 8) : getLong(data, start + 16);
-    var format = getUshort(data, start + offset);
-    var ranges, p, i;
-
-    if (format === 4) {
-      getUshort(data, start + offset + 2);
-      var segCount = getUshort(data, start + offset + 6) >> 1;
-      p = start + offset + 14;
-      ranges = [];
-
-      for (i = 0; i < segCount; i++, p += 2) {
-        ranges[i] = {
-          end: getUshort(data, p)
-        };
-      }
-
-      p += 2;
-
-      for (i = 0; i < segCount; i++, p += 2) {
-        ranges[i].start = getUshort(data, p);
-      }
-
-      for (i = 0; i < segCount; i++, p += 2) {
-        ranges[i].idDelta = getUshort(data, p);
-      }
-
-      for (i = 0; i < segCount; i++, p += 2) {
-        var idOffset = getUshort(data, p);
-
-        if (idOffset === 0) {
-          continue;
-        }
-
-        ranges[i].ids = [];
-
-        for (var j = 0, jj = ranges[i].end - ranges[i].start + 1; j < jj; j++) {
-          ranges[i].ids[j] = getUshort(data, p + idOffset);
-          idOffset += 2;
-        }
-      }
-
-      return ranges;
-    } else if (format === 12) {
-      getLong(data, start + offset + 4);
-      var groups = getLong(data, start + offset + 12);
-      p = start + offset + 16;
-      ranges = [];
-
-      for (i = 0; i < groups; i++) {
-        ranges.push({
-          start: getLong(data, p),
-          end: getLong(data, p + 4),
-          idDelta: getLong(data, p + 8) - getLong(data, p)
-        });
-        p += 12;
-      }
-
-      return ranges;
-    }
-
-    throw new _util.FormatError(`unsupported cmap: ${format}`);
-  }
-
-  function parseCff(data, start, end, seacAnalysisEnabled) {
-    var properties = {};
-    var parser = new _cff_parser.CFFParser(new _stream.Stream(data, start, end - start), properties, seacAnalysisEnabled);
-    var cff = parser.parse();
-    return {
-      glyphs: cff.charStrings.objects,
-      subrs: cff.topDict.privateDict && cff.topDict.privateDict.subrsIndex && cff.topDict.privateDict.subrsIndex.objects,
-      gsubrs: cff.globalSubrIndex && cff.globalSubrIndex.objects,
-      isCFFCIDFont: cff.isCIDFont,
-      fdSelect: cff.fdSelect,
-      fdArray: cff.fdArray
-    };
-  }
-
-  function parseGlyfTable(glyf, loca, isGlyphLocationsLong) {
-    var itemSize, itemDecode;
-
-    if (isGlyphLocationsLong) {
-      itemSize = 4;
-
-      itemDecode = function fontItemDecodeLong(data, offset) {
-        return data[offset] << 24 | data[offset + 1] << 16 | data[offset + 2] << 8 | data[offset + 3];
+  return numSubrs < 1240 ? 107 : 1131;
+}
+function parseCmap(data, start, end) {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const offset = view.getUint16(start + 2) === 1 ? view.getUint32(start + 8) : view.getUint32(start + 16);
+  const format = view.getUint16(start + offset);
+  let ranges, p, i;
+  if (format === 4) {
+    const segCount = view.getUint16(start + offset + 6) >> 1;
+    p = start + offset + 14;
+    ranges = [];
+    for (i = 0; i < segCount; i++, p += 2) {
+      ranges[i] = {
+        end: view.getUint16(p)
       };
+    }
+    p += 2;
+    for (i = 0; i < segCount; i++, p += 2) {
+      ranges[i].start = view.getUint16(p);
+    }
+    for (i = 0; i < segCount; i++, p += 2) {
+      ranges[i].idDelta = view.getUint16(p);
+    }
+    for (i = 0; i < segCount; i++, p += 2) {
+      let idOffset = view.getUint16(p);
+      if (idOffset === 0) {
+        continue;
+      }
+      ranges[i].ids = [];
+      for (let j = 0, jj = ranges[i].end - ranges[i].start + 1; j < jj; j++) {
+        ranges[i].ids[j] = view.getUint16(p + idOffset);
+        idOffset += 2;
+      }
+    }
+    return ranges;
+  } else if (format === 12) {
+    const groups = view.getUint32(start + offset + 12);
+    p = start + offset + 16;
+    ranges = [];
+    for (i = 0; i < groups; i++) {
+      start = view.getUint32(p);
+      ranges.push({
+        start,
+        end: view.getUint32(p + 4),
+        idDelta: view.getUint32(p + 8) - start
+      });
+      p += 12;
+    }
+    return ranges;
+  }
+  throw new FormatError(`unsupported cmap: ${format}`);
+}
+function parseCff(data, start, end, seacAnalysisEnabled) {
+  const properties = {};
+  const parser = new CFFParser(new Stream(data, start, end - start), properties, seacAnalysisEnabled);
+  const cff = parser.parse();
+  return {
+    glyphs: cff.charStrings.objects,
+    subrs: cff.topDict.privateDict?.subrsIndex?.objects,
+    gsubrs: cff.globalSubrIndex?.objects,
+    isCFFCIDFont: cff.isCIDFont,
+    fdSelect: cff.fdSelect,
+    fdArray: cff.fdArray
+  };
+}
+function parseGlyfTable(glyf, loca, isGlyphLocationsLong) {
+  const view = new DataView(loca.buffer, loca.byteOffset, loca.byteLength);
+  let itemSize, itemDecode;
+  if (isGlyphLocationsLong) {
+    itemSize = 4;
+    itemDecode = (dv, offset) => dv.getUint32(offset);
+  } else {
+    itemSize = 2;
+    itemDecode = (dv, offset) => 2 * dv.getUint16(offset);
+  }
+  const glyphs = [];
+  let startOffset = itemDecode(view, 0);
+  for (let j = itemSize; j < loca.length; j += itemSize) {
+    const endOffset = itemDecode(view, j);
+    glyphs.push(glyf.subarray(startOffset, endOffset));
+    startOffset = endOffset;
+  }
+  return glyphs;
+}
+function lookupCmap(ranges, unicode) {
+  const code = unicode.codePointAt(0);
+  let gid = 0,
+    l = 0,
+    r = ranges.length - 1;
+  while (l < r) {
+    const c = l + r + 1 >> 1;
+    if (code < ranges[c].start) {
+      r = c - 1;
     } else {
-      itemSize = 2;
-
-      itemDecode = function fontItemDecode(data, offset) {
-        return data[offset] << 9 | data[offset + 1] << 1;
-      };
+      l = c;
     }
-
-    var glyphs = [];
-    var startOffset = itemDecode(loca, 0);
-
-    for (var j = itemSize; j < loca.length; j += itemSize) {
-      var endOffset = itemDecode(loca, j);
-      glyphs.push(glyf.subarray(startOffset, endOffset));
-      startOffset = endOffset;
-    }
-
-    return glyphs;
   }
-
-  function lookupCmap(ranges, unicode) {
-    var code = unicode.codePointAt(0),
-        gid = 0;
-    var l = 0,
-        r = ranges.length - 1;
-
-    while (l < r) {
-      var c = l + r + 1 >> 1;
-
-      if (code < ranges[c].start) {
-        r = c - 1;
-      } else {
-        l = c;
-      }
-    }
-
-    if (ranges[l].start <= code && code <= ranges[l].end) {
-      gid = ranges[l].idDelta + (ranges[l].ids ? ranges[l].ids[code - ranges[l].start] : code) & 0xffff;
-    }
-
-    return {
-      charCode: code,
-      glyphId: gid
-    };
+  if (ranges[l].start <= code && code <= ranges[l].end) {
+    gid = ranges[l].idDelta + (ranges[l].ids ? ranges[l].ids[code - ranges[l].start] : code) & 0xffff;
   }
-
-  function compileGlyf(code, cmds, font) {
-    function moveTo(x, y) {
-      cmds.push({
-        cmd: "moveTo",
-        args: [x, y]
-      });
+  return {
+    charCode: code,
+    glyphId: gid
+  };
+}
+function compileGlyf(code, cmds, font, visitedGlyphs = new Set()) {
+  if (!code?.length) {
+    return;
+  }
+  if (visitedGlyphs.has(code)) {
+    warn("compileGlyf: skipping recursive composite glyph reference.");
+    return;
+  }
+  visitedGlyphs.add(code);
+  function moveTo(x, y) {
+    if (firstPoint) {
+      cmds.add(DrawOPS.lineTo, firstPoint);
     }
-
-    function lineTo(x, y) {
-      cmds.push({
-        cmd: "lineTo",
-        args: [x, y]
-      });
-    }
-
-    function quadraticCurveTo(xa, ya, x, y) {
-      cmds.push({
-        cmd: "quadraticCurveTo",
-        args: [xa, ya, x, y]
-      });
-    }
-
-    var i = 0;
-    var numberOfContours = (code[i] << 24 | code[i + 1] << 16) >> 16;
-    var flags;
-    var x = 0,
-        y = 0;
-    i += 10;
-
-    if (numberOfContours < 0) {
-      do {
-        flags = code[i] << 8 | code[i + 1];
-        var glyphIndex = code[i + 2] << 8 | code[i + 3];
-        i += 4;
-        var arg1, arg2;
-
-        if (flags & 0x01) {
-          arg1 = (code[i] << 24 | code[i + 1] << 16) >> 16;
-          arg2 = (code[i + 2] << 24 | code[i + 3] << 16) >> 16;
-          i += 4;
-        } else {
-          arg1 = code[i++];
-          arg2 = code[i++];
-        }
-
+    firstPoint = [x, y];
+    cmds.add(DrawOPS.moveTo, [x, y]);
+  }
+  function lineTo(x, y) {
+    cmds.add(DrawOPS.lineTo, [x, y]);
+  }
+  function quadraticCurveTo(xa, ya, x, y) {
+    cmds.add(DrawOPS.quadraticCurveTo, [xa, ya, x, y]);
+  }
+  const view = new DataView(code.buffer, code.byteOffset, code.byteLength);
+  let i = 0;
+  const numberOfContours = view.getInt16(i);
+  let flags;
+  let firstPoint = null;
+  let x = 0,
+    y = 0;
+  i += 10;
+  if (numberOfContours < 0) {
+    do {
+      flags = view.getUint16(i);
+      const glyphIndex = view.getUint16(i + 2);
+      i += 4;
+      let arg1, arg2;
+      if (flags & 0x01) {
         if (flags & 0x02) {
-          x = arg1;
-          y = arg2;
+          arg1 = view.getInt16(i);
+          arg2 = view.getInt16(i + 2);
         } else {
-          x = 0;
-          y = 0;
+          arg1 = view.getUint16(i);
+          arg2 = view.getUint16(i + 2);
         }
-
-        var scaleX = 1,
-            scaleY = 1,
-            scale01 = 0,
-            scale10 = 0;
-
-        if (flags & 0x08) {
-          scaleX = scaleY = (code[i] << 24 | code[i + 1] << 16) / 1073741824;
-          i += 2;
-        } else if (flags & 0x40) {
-          scaleX = (code[i] << 24 | code[i + 1] << 16) / 1073741824;
-          scaleY = (code[i + 2] << 24 | code[i + 3] << 16) / 1073741824;
-          i += 4;
-        } else if (flags & 0x80) {
-          scaleX = (code[i] << 24 | code[i + 1] << 16) / 1073741824;
-          scale01 = (code[i + 2] << 24 | code[i + 3] << 16) / 1073741824;
-          scale10 = (code[i + 4] << 24 | code[i + 5] << 16) / 1073741824;
-          scaleY = (code[i + 6] << 24 | code[i + 7] << 16) / 1073741824;
-          i += 8;
-        }
-
-        var subglyph = font.glyphs[glyphIndex];
-
-        if (subglyph) {
-          cmds.push({
-            cmd: "save"
-          });
-          cmds.push({
-            cmd: "transform",
-            args: [scaleX, scale01, scale10, scaleY, x, y]
-          });
-          compileGlyf(subglyph, cmds, font);
-          cmds.push({
-            cmd: "restore"
-          });
-        }
-      } while (flags & 0x20);
-    } else {
-      var endPtsOfContours = [];
-      var j, jj;
-
-      for (j = 0; j < numberOfContours; j++) {
-        endPtsOfContours.push(code[i] << 8 | code[i + 1]);
+        i += 4;
+      } else if (flags & 0x02) {
+        arg1 = view.getInt8(i++);
+        arg2 = view.getInt8(i++);
+      } else {
+        arg1 = code[i++];
+        arg2 = code[i++];
+      }
+      if (flags & 0x02) {
+        x = arg1;
+        y = arg2;
+      } else {
+        x = 0;
+        y = 0;
+      }
+      let scaleX = 1,
+        scaleY = 1,
+        scale01 = 0,
+        scale10 = 0;
+      if (flags & 0x08) {
+        scaleX = scaleY = getFloat214(view, i);
         i += 2;
+      } else if (flags & 0x40) {
+        scaleX = getFloat214(view, i);
+        scaleY = getFloat214(view, i + 2);
+        i += 4;
+      } else if (flags & 0x80) {
+        scaleX = getFloat214(view, i);
+        scale01 = getFloat214(view, i + 2);
+        scale10 = getFloat214(view, i + 4);
+        scaleY = getFloat214(view, i + 6);
+        i += 8;
       }
-
-      var instructionLength = code[i] << 8 | code[i + 1];
-      i += 2 + instructionLength;
-      var numberOfPoints = endPtsOfContours[endPtsOfContours.length - 1] + 1;
-      var points = [];
-
-      while (points.length < numberOfPoints) {
-        flags = code[i++];
-        var repeat = 1;
-
-        if (flags & 0x08) {
-          repeat += code[i++];
-        }
-
-        while (repeat-- > 0) {
-          points.push({
-            flags
-          });
-        }
+      const subglyph = font.glyphs[glyphIndex];
+      if (subglyph) {
+        cmds.save();
+        cmds.transform([scaleX, scale01, scale10, scaleY, x, y]);
+        if (!(flags & 0x02)) {}
+        compileGlyf(subglyph, cmds, font, visitedGlyphs);
+        cmds.restore();
       }
-
-      for (j = 0; j < numberOfPoints; j++) {
-        switch (points[j].flags & 0x12) {
-          case 0x00:
-            x += (code[i] << 24 | code[i + 1] << 16) >> 16;
-            i += 2;
-            break;
-
-          case 0x02:
-            x -= code[i++];
-            break;
-
-          case 0x12:
-            x += code[i++];
-            break;
-        }
-
-        points[j].x = x;
+    } while (flags & 0x20);
+  } else {
+    const endPtsOfContours = [];
+    let j, jj;
+    for (j = 0; j < numberOfContours; j++) {
+      endPtsOfContours.push(view.getUint16(i));
+      i += 2;
+    }
+    const instructionLength = view.getUint16(i);
+    i += 2 + instructionLength;
+    const numberOfPoints = endPtsOfContours.at(-1) + 1;
+    const points = [];
+    while (points.length < numberOfPoints) {
+      flags = code[i++];
+      let repeat = 1;
+      if (flags & 0x08) {
+        repeat += code[i++];
       }
-
-      for (j = 0; j < numberOfPoints; j++) {
-        switch (points[j].flags & 0x24) {
-          case 0x00:
-            y += (code[i] << 24 | code[i + 1] << 16) >> 16;
-            i += 2;
-            break;
-
-          case 0x04:
-            y -= code[i++];
-            break;
-
-          case 0x24:
-            y += code[i++];
-            break;
-        }
-
-        points[j].y = y;
+      while (repeat-- > 0) {
+        points.push({
+          flags
+        });
       }
-
-      var startPoint = 0;
-
-      for (i = 0; i < numberOfContours; i++) {
-        var endPoint = endPtsOfContours[i];
-        var contour = points.slice(startPoint, endPoint + 1);
-
-        if (contour[0].flags & 1) {
-          contour.push(contour[0]);
-        } else if (contour[contour.length - 1].flags & 1) {
-          contour.unshift(contour[contour.length - 1]);
+    }
+    for (j = 0; j < numberOfPoints; j++) {
+      switch (points[j].flags & 0x12) {
+        case 0x00:
+          x += view.getInt16(i);
+          i += 2;
+          break;
+        case 0x02:
+          x -= code[i++];
+          break;
+        case 0x12:
+          x += code[i++];
+          break;
+      }
+      points[j].x = x;
+    }
+    for (j = 0; j < numberOfPoints; j++) {
+      switch (points[j].flags & 0x24) {
+        case 0x00:
+          y += view.getInt16(i);
+          i += 2;
+          break;
+        case 0x04:
+          y -= code[i++];
+          break;
+        case 0x24:
+          y += code[i++];
+          break;
+      }
+      points[j].y = y;
+    }
+    let startPoint = 0;
+    for (i = 0; i < numberOfContours; i++) {
+      const endPoint = endPtsOfContours[i];
+      const contour = points.slice(startPoint, endPoint + 1);
+      if (contour[0].flags & 1) {
+        contour.push(contour[0]);
+      } else if (contour.at(-1).flags & 1) {
+        contour.unshift(contour.at(-1));
+      } else {
+        const p = {
+          flags: 1,
+          x: (contour[0].x + contour.at(-1).x) / 2,
+          y: (contour[0].y + contour.at(-1).y) / 2
+        };
+        contour.unshift(p);
+        contour.push(p);
+      }
+      moveTo(contour[0].x, contour[0].y);
+      for (j = 1, jj = contour.length; j < jj; j++) {
+        if (contour[j].flags & 1) {
+          lineTo(contour[j].x, contour[j].y);
+        } else if (contour[j + 1].flags & 1) {
+          quadraticCurveTo(contour[j].x, contour[j].y, contour[j + 1].x, contour[j + 1].y);
+          j++;
         } else {
-          var p = {
-            flags: 1,
-            x: (contour[0].x + contour[contour.length - 1].x) / 2,
-            y: (contour[0].y + contour[contour.length - 1].y) / 2
-          };
-          contour.unshift(p);
-          contour.push(p);
+          quadraticCurveTo(contour[j].x, contour[j].y, (contour[j].x + contour[j + 1].x) / 2, (contour[j].y + contour[j + 1].y) / 2);
         }
-
-        moveTo(contour[0].x, contour[0].y);
-
-        for (j = 1, jj = contour.length; j < jj; j++) {
-          if (contour[j].flags & 1) {
-            lineTo(contour[j].x, contour[j].y);
-          } else if (contour[j + 1].flags & 1) {
-            quadraticCurveTo(contour[j].x, contour[j].y, contour[j + 1].x, contour[j + 1].y);
-            j++;
-          } else {
-            quadraticCurveTo(contour[j].x, contour[j].y, (contour[j].x + contour[j + 1].x) / 2, (contour[j].y + contour[j + 1].y) / 2);
-          }
-        }
-
-        startPoint = endPoint + 1;
       }
+      startPoint = endPoint + 1;
     }
   }
-
-  function compileCharString(code, cmds, font, glyphId) {
-    var stack = [];
-    var x = 0,
-        y = 0;
-    var stems = 0;
-
-    function moveTo(x, y) {
-      cmds.push({
-        cmd: "moveTo",
-        args: [x, y]
-      });
+  visitedGlyphs.delete(code);
+}
+function compileCharString(charStringCode, cmds, font, glyphId) {
+  function moveTo(x, y) {
+    if (firstPoint) {
+      cmds.add(DrawOPS.lineTo, firstPoint);
     }
-
-    function lineTo(x, y) {
-      cmds.push({
-        cmd: "lineTo",
-        args: [x, y]
-      });
-    }
-
-    function bezierCurveTo(x1, y1, x2, y2, x, y) {
-      cmds.push({
-        cmd: "bezierCurveTo",
-        args: [x1, y1, x2, y2, x, y]
-      });
-    }
-
-    function parse(code) {
-      var i = 0;
-
-      while (i < code.length) {
-        var stackClean = false;
-        var v = code[i++];
-        var xa, xb, ya, yb, y1, y2, y3, n, subrCode;
-
-        switch (v) {
-          case 1:
-            stems += stack.length >> 1;
-            stackClean = true;
-            break;
-
-          case 3:
-            stems += stack.length >> 1;
-            stackClean = true;
-            break;
-
-          case 4:
-            y += stack.pop();
-            moveTo(x, y);
-            stackClean = true;
-            break;
-
-          case 5:
-            while (stack.length > 0) {
-              x += stack.shift();
-              y += stack.shift();
-              lineTo(x, y);
-            }
-
-            break;
-
-          case 6:
-            while (stack.length > 0) {
-              x += stack.shift();
-              lineTo(x, y);
-
-              if (stack.length === 0) {
-                break;
-              }
-
-              y += stack.shift();
-              lineTo(x, y);
-            }
-
-            break;
-
-          case 7:
-            while (stack.length > 0) {
-              y += stack.shift();
-              lineTo(x, y);
-
-              if (stack.length === 0) {
-                break;
-              }
-
-              x += stack.shift();
-              lineTo(x, y);
-            }
-
-            break;
-
-          case 8:
-            while (stack.length > 0) {
-              xa = x + stack.shift();
-              ya = y + stack.shift();
-              xb = xa + stack.shift();
-              yb = ya + stack.shift();
-              x = xb + stack.shift();
-              y = yb + stack.shift();
-              bezierCurveTo(xa, ya, xb, yb, x, y);
-            }
-
-            break;
-
-          case 10:
-            n = stack.pop();
-            subrCode = null;
-
-            if (font.isCFFCIDFont) {
-              const fdIndex = font.fdSelect.getFDIndex(glyphId);
-
-              if (fdIndex >= 0 && fdIndex < font.fdArray.length) {
-                const fontDict = font.fdArray[fdIndex];
-                let subrs;
-
-                if (fontDict.privateDict && fontDict.privateDict.subrsIndex) {
-                  subrs = fontDict.privateDict.subrsIndex.objects;
-                }
-
-                if (subrs) {
-                  n += getSubroutineBias(subrs);
-                  subrCode = subrs[n];
-                }
-              } else {
-                (0, _util.warn)("Invalid fd index for glyph index.");
-              }
-            } else {
-              subrCode = font.subrs[n + font.subrsBias];
-            }
-
-            if (subrCode) {
-              parse(subrCode);
-            }
-
-            break;
-
-          case 11:
-            return;
-
-          case 12:
-            v = code[i++];
-
-            switch (v) {
-              case 34:
-                xa = x + stack.shift();
-                xb = xa + stack.shift();
-                y1 = y + stack.shift();
-                x = xb + stack.shift();
-                bezierCurveTo(xa, y, xb, y1, x, y1);
-                xa = x + stack.shift();
-                xb = xa + stack.shift();
-                x = xb + stack.shift();
-                bezierCurveTo(xa, y1, xb, y, x, y);
-                break;
-
-              case 35:
-                xa = x + stack.shift();
-                ya = y + stack.shift();
-                xb = xa + stack.shift();
-                yb = ya + stack.shift();
-                x = xb + stack.shift();
-                y = yb + stack.shift();
-                bezierCurveTo(xa, ya, xb, yb, x, y);
-                xa = x + stack.shift();
-                ya = y + stack.shift();
-                xb = xa + stack.shift();
-                yb = ya + stack.shift();
-                x = xb + stack.shift();
-                y = yb + stack.shift();
-                bezierCurveTo(xa, ya, xb, yb, x, y);
-                stack.pop();
-                break;
-
-              case 36:
-                xa = x + stack.shift();
-                y1 = y + stack.shift();
-                xb = xa + stack.shift();
-                y2 = y1 + stack.shift();
-                x = xb + stack.shift();
-                bezierCurveTo(xa, y1, xb, y2, x, y2);
-                xa = x + stack.shift();
-                xb = xa + stack.shift();
-                y3 = y2 + stack.shift();
-                x = xb + stack.shift();
-                bezierCurveTo(xa, y2, xb, y3, x, y);
-                break;
-
-              case 37:
-                var x0 = x,
-                    y0 = y;
-                xa = x + stack.shift();
-                ya = y + stack.shift();
-                xb = xa + stack.shift();
-                yb = ya + stack.shift();
-                x = xb + stack.shift();
-                y = yb + stack.shift();
-                bezierCurveTo(xa, ya, xb, yb, x, y);
-                xa = x + stack.shift();
-                ya = y + stack.shift();
-                xb = xa + stack.shift();
-                yb = ya + stack.shift();
-                x = xb;
-                y = yb;
-
-                if (Math.abs(x - x0) > Math.abs(y - y0)) {
-                  x += stack.shift();
-                } else {
-                  y += stack.shift();
-                }
-
-                bezierCurveTo(xa, ya, xb, yb, x, y);
-                break;
-
-              default:
-                throw new _util.FormatError(`unknown operator: 12 ${v}`);
-            }
-
-            break;
-
-          case 14:
-            if (stack.length >= 4) {
-              var achar = stack.pop();
-              var bchar = stack.pop();
-              y = stack.pop();
-              x = stack.pop();
-              cmds.push({
-                cmd: "save"
-              });
-              cmds.push({
-                cmd: "translate",
-                args: [x, y]
-              });
-              var cmap = lookupCmap(font.cmap, String.fromCharCode(font.glyphNameMap[_encodings.StandardEncoding[achar]]));
-              compileCharString(font.glyphs[cmap.glyphId], cmds, font, cmap.glyphId);
-              cmds.push({
-                cmd: "restore"
-              });
-              cmap = lookupCmap(font.cmap, String.fromCharCode(font.glyphNameMap[_encodings.StandardEncoding[bchar]]));
-              compileCharString(font.glyphs[cmap.glyphId], cmds, font, cmap.glyphId);
-            }
-
-            return;
-
-          case 18:
-            stems += stack.length >> 1;
-            stackClean = true;
-            break;
-
-          case 19:
-            stems += stack.length >> 1;
-            i += stems + 7 >> 3;
-            stackClean = true;
-            break;
-
-          case 20:
-            stems += stack.length >> 1;
-            i += stems + 7 >> 3;
-            stackClean = true;
-            break;
-
-          case 21:
-            y += stack.pop();
-            x += stack.pop();
-            moveTo(x, y);
-            stackClean = true;
-            break;
-
-          case 22:
-            x += stack.pop();
-            moveTo(x, y);
-            stackClean = true;
-            break;
-
-          case 23:
-            stems += stack.length >> 1;
-            stackClean = true;
-            break;
-
-          case 24:
-            while (stack.length > 2) {
-              xa = x + stack.shift();
-              ya = y + stack.shift();
-              xb = xa + stack.shift();
-              yb = ya + stack.shift();
-              x = xb + stack.shift();
-              y = yb + stack.shift();
-              bezierCurveTo(xa, ya, xb, yb, x, y);
-            }
-
+    firstPoint = [x, y];
+    cmds.add(DrawOPS.moveTo, [x, y]);
+  }
+  function lineTo(x, y) {
+    cmds.add(DrawOPS.lineTo, [x, y]);
+  }
+  function bezierCurveTo(x1, y1, x2, y2, x, y) {
+    cmds.add(DrawOPS.curveTo, [x1, y1, x2, y2, x, y]);
+  }
+  const stack = [];
+  let x = 0,
+    y = 0;
+  let stems = 0;
+  let firstPoint = null;
+  function parse(code) {
+    const view = new DataView(code.buffer, code.byteOffset, code.byteLength);
+    let i = 0;
+    while (i < code.length) {
+      let stackClean = false;
+      let v = code[i++];
+      let xa, xb, ya, yb, y1, y2, y3, n, subrCode;
+      switch (v) {
+        case 1:
+          stems += stack.length >> 1;
+          stackClean = true;
+          break;
+        case 3:
+          stems += stack.length >> 1;
+          stackClean = true;
+          break;
+        case 4:
+          y += stack.pop();
+          moveTo(x, y);
+          stackClean = true;
+          break;
+        case 5:
+          while (stack.length > 0) {
             x += stack.shift();
             y += stack.shift();
             lineTo(x, y);
-            break;
-
-          case 25:
-            while (stack.length > 6) {
-              x += stack.shift();
-              y += stack.shift();
-              lineTo(x, y);
+          }
+          break;
+        case 6:
+          while (stack.length > 0) {
+            x += stack.shift();
+            lineTo(x, y);
+            if (stack.length === 0) {
+              break;
             }
-
+            y += stack.shift();
+            lineTo(x, y);
+          }
+          break;
+        case 7:
+          while (stack.length > 0) {
+            y += stack.shift();
+            lineTo(x, y);
+            if (stack.length === 0) {
+              break;
+            }
+            x += stack.shift();
+            lineTo(x, y);
+          }
+          break;
+        case 8:
+          while (stack.length > 0) {
             xa = x + stack.shift();
             ya = y + stack.shift();
             xb = xa + stack.shift();
@@ -693,289 +397,435 @@ var FontRendererFactory = function FontRendererFactoryClosure() {
             x = xb + stack.shift();
             y = yb + stack.shift();
             bezierCurveTo(xa, ya, xb, yb, x, y);
-            break;
-
-          case 26:
-            if (stack.length % 2) {
-              x += stack.shift();
+          }
+          break;
+        case 10:
+          n = stack.pop();
+          subrCode = null;
+          if (font.isCFFCIDFont) {
+            const fdIndex = font.fdSelect.getFDIndex(glyphId);
+            if (fdIndex >= 0 && fdIndex < font.fdArray.length) {
+              const fontDict = font.fdArray[fdIndex];
+              let subrs;
+              if (fontDict.privateDict?.subrsIndex) {
+                subrs = fontDict.privateDict.subrsIndex.objects;
+              }
+              if (subrs) {
+                n += getSubroutineBias(subrs);
+                subrCode = subrs[n];
+              }
+            } else {
+              warn("Invalid fd index for glyph index.");
             }
-
-            while (stack.length > 0) {
-              xa = x;
+          } else {
+            subrCode = font.subrs[n + font.subrsBias];
+          }
+          if (subrCode) {
+            parse(subrCode);
+          }
+          break;
+        case 11:
+          return;
+        case 12:
+          v = code[i++];
+          switch (v) {
+            case 34:
+              xa = x + stack.shift();
+              xb = xa + stack.shift();
+              y1 = y + stack.shift();
+              x = xb + stack.shift();
+              bezierCurveTo(xa, y, xb, y1, x, y1);
+              xa = x + stack.shift();
+              xb = xa + stack.shift();
+              x = xb + stack.shift();
+              bezierCurveTo(xa, y1, xb, y, x, y);
+              break;
+            case 35:
+              xa = x + stack.shift();
+              ya = y + stack.shift();
+              xb = xa + stack.shift();
+              yb = ya + stack.shift();
+              x = xb + stack.shift();
+              y = yb + stack.shift();
+              bezierCurveTo(xa, ya, xb, yb, x, y);
+              xa = x + stack.shift();
+              ya = y + stack.shift();
+              xb = xa + stack.shift();
+              yb = ya + stack.shift();
+              x = xb + stack.shift();
+              y = yb + stack.shift();
+              bezierCurveTo(xa, ya, xb, yb, x, y);
+              stack.pop();
+              break;
+            case 36:
+              xa = x + stack.shift();
+              y1 = y + stack.shift();
+              xb = xa + stack.shift();
+              y2 = y1 + stack.shift();
+              x = xb + stack.shift();
+              bezierCurveTo(xa, y1, xb, y2, x, y2);
+              xa = x + stack.shift();
+              xb = xa + stack.shift();
+              y3 = y2 + stack.shift();
+              x = xb + stack.shift();
+              bezierCurveTo(xa, y2, xb, y3, x, y);
+              break;
+            case 37:
+              const x0 = x,
+                y0 = y;
+              xa = x + stack.shift();
+              ya = y + stack.shift();
+              xb = xa + stack.shift();
+              yb = ya + stack.shift();
+              x = xb + stack.shift();
+              y = yb + stack.shift();
+              bezierCurveTo(xa, ya, xb, yb, x, y);
+              xa = x + stack.shift();
               ya = y + stack.shift();
               xb = xa + stack.shift();
               yb = ya + stack.shift();
               x = xb;
-              y = yb + stack.shift();
-              bezierCurveTo(xa, ya, xb, yb, x, y);
-            }
-
-            break;
-
-          case 27:
-            if (stack.length % 2) {
-              y += stack.shift();
-            }
-
-            while (stack.length > 0) {
-              xa = x + stack.shift();
-              ya = y;
-              xb = xa + stack.shift();
-              yb = ya + stack.shift();
-              x = xb + stack.shift();
               y = yb;
-              bezierCurveTo(xa, ya, xb, yb, x, y);
-            }
-
-            break;
-
-          case 28:
-            stack.push((code[i] << 24 | code[i + 1] << 16) >> 16);
-            i += 2;
-            break;
-
-          case 29:
-            n = stack.pop() + font.gsubrsBias;
-            subrCode = font.gsubrs[n];
-
-            if (subrCode) {
-              parse(subrCode);
-            }
-
-            break;
-
-          case 30:
-            while (stack.length > 0) {
-              xa = x;
-              ya = y + stack.shift();
-              xb = xa + stack.shift();
-              yb = ya + stack.shift();
-              x = xb + stack.shift();
-              y = yb + (stack.length === 1 ? stack.shift() : 0);
-              bezierCurveTo(xa, ya, xb, yb, x, y);
-
-              if (stack.length === 0) {
-                break;
+              if (Math.abs(x - x0) > Math.abs(y - y0)) {
+                x += stack.shift();
+              } else {
+                y += stack.shift();
               }
-
-              xa = x + stack.shift();
-              ya = y;
-              xb = xa + stack.shift();
-              yb = ya + stack.shift();
-              y = yb + stack.shift();
-              x = xb + (stack.length === 1 ? stack.shift() : 0);
               bezierCurveTo(xa, ya, xb, yb, x, y);
+              break;
+            default:
+              throw new FormatError(`unknown operator: 12 ${v}`);
+          }
+          break;
+        case 14:
+          if (stack.length >= 4) {
+            const achar = stack.pop();
+            const bchar = stack.pop();
+            y = stack.pop();
+            x = stack.pop();
+            cmds.save();
+            cmds.translate(x, y);
+            let cmap = lookupCmap(font.cmap, String.fromCharCode(font.glyphNameMap[StandardEncoding[achar]]));
+            compileCharString(font.glyphs[cmap.glyphId], cmds, font, cmap.glyphId);
+            cmds.restore();
+            cmap = lookupCmap(font.cmap, String.fromCharCode(font.glyphNameMap[StandardEncoding[bchar]]));
+            compileCharString(font.glyphs[cmap.glyphId], cmds, font, cmap.glyphId);
+          }
+          return;
+        case 18:
+          stems += stack.length >> 1;
+          stackClean = true;
+          break;
+        case 19:
+          stems += stack.length >> 1;
+          i += stems + 7 >> 3;
+          stackClean = true;
+          break;
+        case 20:
+          stems += stack.length >> 1;
+          i += stems + 7 >> 3;
+          stackClean = true;
+          break;
+        case 21:
+          y += stack.pop();
+          x += stack.pop();
+          moveTo(x, y);
+          stackClean = true;
+          break;
+        case 22:
+          x += stack.pop();
+          moveTo(x, y);
+          stackClean = true;
+          break;
+        case 23:
+          stems += stack.length >> 1;
+          stackClean = true;
+          break;
+        case 24:
+          while (stack.length > 2) {
+            xa = x + stack.shift();
+            ya = y + stack.shift();
+            xb = xa + stack.shift();
+            yb = ya + stack.shift();
+            x = xb + stack.shift();
+            y = yb + stack.shift();
+            bezierCurveTo(xa, ya, xb, yb, x, y);
+          }
+          x += stack.shift();
+          y += stack.shift();
+          lineTo(x, y);
+          break;
+        case 25:
+          while (stack.length > 6) {
+            x += stack.shift();
+            y += stack.shift();
+            lineTo(x, y);
+          }
+          xa = x + stack.shift();
+          ya = y + stack.shift();
+          xb = xa + stack.shift();
+          yb = ya + stack.shift();
+          x = xb + stack.shift();
+          y = yb + stack.shift();
+          bezierCurveTo(xa, ya, xb, yb, x, y);
+          break;
+        case 26:
+          if (stack.length % 2) {
+            x += stack.shift();
+          }
+          while (stack.length > 0) {
+            xa = x;
+            ya = y + stack.shift();
+            xb = xa + stack.shift();
+            yb = ya + stack.shift();
+            x = xb;
+            y = yb + stack.shift();
+            bezierCurveTo(xa, ya, xb, yb, x, y);
+          }
+          break;
+        case 27:
+          if (stack.length % 2) {
+            y += stack.shift();
+          }
+          while (stack.length > 0) {
+            xa = x + stack.shift();
+            ya = y;
+            xb = xa + stack.shift();
+            yb = ya + stack.shift();
+            x = xb + stack.shift();
+            y = yb;
+            bezierCurveTo(xa, ya, xb, yb, x, y);
+          }
+          break;
+        case 28:
+          stack.push(view.getInt16(i));
+          i += 2;
+          break;
+        case 29:
+          n = stack.pop() + font.gsubrsBias;
+          subrCode = font.gsubrs[n];
+          if (subrCode) {
+            parse(subrCode);
+          }
+          break;
+        case 30:
+          while (stack.length > 0) {
+            xa = x;
+            ya = y + stack.shift();
+            xb = xa + stack.shift();
+            yb = ya + stack.shift();
+            x = xb + stack.shift();
+            y = yb + (stack.length === 1 ? stack.shift() : 0);
+            bezierCurveTo(xa, ya, xb, yb, x, y);
+            if (stack.length === 0) {
+              break;
             }
-
-            break;
-
-          case 31:
-            while (stack.length > 0) {
-              xa = x + stack.shift();
-              ya = y;
-              xb = xa + stack.shift();
-              yb = ya + stack.shift();
-              y = yb + stack.shift();
-              x = xb + (stack.length === 1 ? stack.shift() : 0);
-              bezierCurveTo(xa, ya, xb, yb, x, y);
-
-              if (stack.length === 0) {
-                break;
-              }
-
-              xa = x;
-              ya = y + stack.shift();
-              xb = xa + stack.shift();
-              yb = ya + stack.shift();
-              x = xb + stack.shift();
-              y = yb + (stack.length === 1 ? stack.shift() : 0);
-              bezierCurveTo(xa, ya, xb, yb, x, y);
+            xa = x + stack.shift();
+            ya = y;
+            xb = xa + stack.shift();
+            yb = ya + stack.shift();
+            y = yb + stack.shift();
+            x = xb + (stack.length === 1 ? stack.shift() : 0);
+            bezierCurveTo(xa, ya, xb, yb, x, y);
+          }
+          break;
+        case 31:
+          while (stack.length > 0) {
+            xa = x + stack.shift();
+            ya = y;
+            xb = xa + stack.shift();
+            yb = ya + stack.shift();
+            y = yb + stack.shift();
+            x = xb + (stack.length === 1 ? stack.shift() : 0);
+            bezierCurveTo(xa, ya, xb, yb, x, y);
+            if (stack.length === 0) {
+              break;
             }
-
-            break;
-
-          default:
-            if (v < 32) {
-              throw new _util.FormatError(`unknown operator: ${v}`);
-            }
-
-            if (v < 247) {
-              stack.push(v - 139);
-            } else if (v < 251) {
-              stack.push((v - 247) * 256 + code[i++] + 108);
-            } else if (v < 255) {
-              stack.push(-(v - 251) * 256 - code[i++] - 108);
-            } else {
-              stack.push((code[i] << 24 | code[i + 1] << 16 | code[i + 2] << 8 | code[i + 3]) / 65536);
-              i += 4;
-            }
-
-            break;
-        }
-
-        if (stackClean) {
-          stack.length = 0;
-        }
+            xa = x;
+            ya = y + stack.shift();
+            xb = xa + stack.shift();
+            yb = ya + stack.shift();
+            x = xb + stack.shift();
+            y = yb + (stack.length === 1 ? stack.shift() : 0);
+            bezierCurveTo(xa, ya, xb, yb, x, y);
+          }
+          break;
+        default:
+          if (v < 32) {
+            throw new FormatError(`unknown operator: ${v}`);
+          }
+          if (v < 247) {
+            stack.push(v - 139);
+          } else if (v < 251) {
+            stack.push((v - 247) * 256 + code[i++] + 108);
+          } else if (v < 255) {
+            stack.push(-(v - 251) * 256 - code[i++] - 108);
+          } else {
+            stack.push(view.getInt32(i) / 65536);
+            i += 4;
+          }
+          break;
+      }
+      if (stackClean) {
+        stack.length = 0;
       }
     }
-
-    parse(code);
   }
-
-  const NOOP = [];
-
-  class CompiledFont {
-    constructor(fontMatrix) {
-      if (this.constructor === CompiledFont) {
-        (0, _util.unreachable)("Cannot initialize CompiledFont.");
+  parse(charStringCode);
+}
+class Commands {
+  cmds = [];
+  transformStack = [];
+  currentTransform = [1, 0, 0, 1, 0, 0];
+  add(cmd, args) {
+    if (args) {
+      const {
+        currentTransform
+      } = this;
+      for (let i = 0, ii = args.length; i < ii; i += 2) {
+        Util.applyTransform(args, currentTransform, i);
       }
-
-      this.fontMatrix = fontMatrix;
-      this.compiledGlyphs = Object.create(null);
-      this.compiledCharCodeToGlyphId = Object.create(null);
+      this.cmds.push(cmd, ...args);
+    } else {
+      this.cmds.push(cmd);
     }
-
-    getPathJs(unicode) {
-      const cmap = lookupCmap(this.cmap, unicode);
-      let fn = this.compiledGlyphs[cmap.glyphId];
-
-      if (!fn) {
-        fn = this.compileGlyph(this.glyphs[cmap.glyphId], cmap.glyphId);
-        this.compiledGlyphs[cmap.glyphId] = fn;
-      }
-
-      if (this.compiledCharCodeToGlyphId[cmap.charCode] === undefined) {
-        this.compiledCharCodeToGlyphId[cmap.charCode] = cmap.glyphId;
-      }
-
-      return fn;
-    }
-
-    compileGlyph(code, glyphId) {
-      if (!code || code.length === 0 || code[0] === 14) {
-        return NOOP;
-      }
-
-      let fontMatrix = this.fontMatrix;
-
-      if (this.isCFFCIDFont) {
-        const fdIndex = this.fdSelect.getFDIndex(glyphId);
-
-        if (fdIndex >= 0 && fdIndex < this.fdArray.length) {
-          const fontDict = this.fdArray[fdIndex];
-          fontMatrix = fontDict.getByName("FontMatrix") || _util.FONT_IDENTITY_MATRIX;
-        } else {
-          (0, _util.warn)("Invalid fd index for glyph index.");
-        }
-      }
-
-      const cmds = [];
-      cmds.push({
-        cmd: "save"
-      });
-      cmds.push({
-        cmd: "transform",
-        args: fontMatrix.slice()
-      });
-      cmds.push({
-        cmd: "scale",
-        args: ["size", "-size"]
-      });
-      this.compileGlyphImpl(code, cmds, glyphId);
-      cmds.push({
-        cmd: "restore"
-      });
-      return cmds;
-    }
-
-    compileGlyphImpl() {
-      (0, _util.unreachable)("Children classes should implement this.");
-    }
-
-    hasBuiltPath(unicode) {
-      const cmap = lookupCmap(this.cmap, unicode);
-      return this.compiledGlyphs[cmap.glyphId] !== undefined && this.compiledCharCodeToGlyphId[cmap.charCode] !== undefined;
-    }
-
   }
-
-  class TrueTypeCompiled extends CompiledFont {
-    constructor(glyphs, cmap, fontMatrix) {
-      super(fontMatrix || [0.000488, 0, 0, 0.000488, 0, 0]);
-      this.glyphs = glyphs;
-      this.cmap = cmap;
-    }
-
-    compileGlyphImpl(code, cmds) {
-      compileGlyf(code, cmds, this);
-    }
-
+  transform(transf) {
+    this.currentTransform = Util.transform(this.currentTransform, transf);
   }
-
-  class Type2Compiled extends CompiledFont {
-    constructor(cffInfo, cmap, fontMatrix, glyphNameMap) {
-      super(fontMatrix || [0.001, 0, 0, 0.001, 0, 0]);
-      this.glyphs = cffInfo.glyphs;
-      this.gsubrs = cffInfo.gsubrs || [];
-      this.subrs = cffInfo.subrs || [];
-      this.cmap = cmap;
-      this.glyphNameMap = glyphNameMap || (0, _glyphlist.getGlyphsUnicode)();
-      this.gsubrsBias = getSubroutineBias(this.gsubrs);
-      this.subrsBias = getSubroutineBias(this.subrs);
-      this.isCFFCIDFont = cffInfo.isCFFCIDFont;
-      this.fdSelect = cffInfo.fdSelect;
-      this.fdArray = cffInfo.fdArray;
-    }
-
-    compileGlyphImpl(code, cmds, glyphId) {
-      compileCharString(code, cmds, this, glyphId);
-    }
-
+  translate(x, y) {
+    this.transform([1, 0, 0, 1, x, y]);
   }
-
-  return {
-    create: function FontRendererFactory_create(font, seacAnalysisEnabled) {
-      var data = new Uint8Array(font.data);
-      var cmap, glyf, loca, cff, indexToLocFormat, unitsPerEm;
-      var numTables = getUshort(data, 4);
-
-      for (var i = 0, p = 12; i < numTables; i++, p += 16) {
-        var tag = (0, _util.bytesToString)(data.subarray(p, p + 4));
-        var offset = getLong(data, p + 8);
-        var length = getLong(data, p + 12);
-
-        switch (tag) {
-          case "cmap":
-            cmap = parseCmap(data, offset, offset + length);
-            break;
-
-          case "glyf":
-            glyf = data.subarray(offset, offset + length);
-            break;
-
-          case "loca":
-            loca = data.subarray(offset, offset + length);
-            break;
-
-          case "head":
-            unitsPerEm = getUshort(data, offset + 18);
-            indexToLocFormat = getUshort(data, offset + 50);
-            break;
-
-          case "CFF ":
-            cff = parseCff(data, offset, offset + length, seacAnalysisEnabled);
-            break;
-        }
-      }
-
-      if (glyf) {
-        var fontMatrix = !unitsPerEm ? font.fontMatrix : [1 / unitsPerEm, 0, 0, 1 / unitsPerEm, 0, 0];
-        return new TrueTypeCompiled(parseGlyfTable(glyf, loca, indexToLocFormat), cmap, fontMatrix);
-      }
-
-      return new Type2Compiled(cff, cmap, font.fontMatrix, font.glyphNameMap);
+  save() {
+    this.transformStack.push(this.currentTransform.slice());
+  }
+  restore() {
+    this.currentTransform = this.transformStack.pop() || [1, 0, 0, 1, 0, 0];
+  }
+  getPath() {
+    if (FeatureTest.isFloat16ArraySupported) {
+      return new Float16Array(this.cmds);
     }
-  };
-}();
-
-exports.FontRendererFactory = FontRendererFactory;
+    return new Float32Array(this.cmds);
+  }
+}
+class CompiledFont {
+  #compiledCharCodes = new Set();
+  #compiledGlyphs = new Map();
+  constructor(fontMatrix) {
+    this.fontMatrix = fontMatrix;
+  }
+  static get NOOP() {
+    return shadow(this, "NOOP", FeatureTest.isFloat16ArraySupported ? new Float16Array(0) : new Float32Array(0));
+  }
+  getPath(unicode) {
+    const {
+      charCode,
+      glyphId
+    } = lookupCmap(this.cmap, unicode);
+    if (this.#compiledGlyphs.has(glyphId) && this.#compiledCharCodes.has(charCode)) {
+      return null;
+    }
+    const path = this.#compiledGlyphs.getOrInsertComputed(glyphId, () => {
+      try {
+        return this.compileGlyph(this.glyphs[glyphId], glyphId);
+      } catch (ex) {
+        return ex;
+      }
+    });
+    this.#compiledCharCodes.add(charCode);
+    if (path instanceof Error) {
+      throw path;
+    }
+    return compileFontPathInfo(path);
+  }
+  compileGlyph(code, glyphId) {
+    if (!code?.length || code[0] === 14) {
+      return CompiledFont.NOOP;
+    }
+    let fontMatrix = this.fontMatrix;
+    if (this.isCFFCIDFont) {
+      const fdIndex = this.fdSelect.getFDIndex(glyphId);
+      if (fdIndex >= 0 && fdIndex < this.fdArray.length) {
+        const fontDict = this.fdArray[fdIndex];
+        fontMatrix = fontDict.getByName("FontMatrix") || FONT_IDENTITY_MATRIX;
+      } else {
+        warn("Invalid fd index for glyph index.");
+      }
+    }
+    assert(isNumberArray(fontMatrix, 6), "Expected a valid fontMatrix.");
+    const cmds = new Commands();
+    cmds.transform(fontMatrix.slice());
+    this.compileGlyphImpl(code, cmds, glyphId);
+    cmds.add(DrawOPS.closePath);
+    return cmds.getPath();
+  }
+  compileGlyphImpl() {
+    unreachable("Children classes should implement this.");
+  }
+}
+class TrueTypeCompiled extends CompiledFont {
+  constructor(glyphs, cmap, fontMatrix) {
+    super(fontMatrix || [0.000488, 0, 0, 0.000488, 0, 0]);
+    this.glyphs = glyphs;
+    this.cmap = cmap;
+  }
+  compileGlyphImpl(code, cmds) {
+    compileGlyf(code, cmds, this);
+  }
+}
+class Type2Compiled extends CompiledFont {
+  constructor(cffInfo, cmap, fontMatrix) {
+    super(fontMatrix || [0.001, 0, 0, 0.001, 0, 0]);
+    this.glyphs = cffInfo.glyphs;
+    this.gsubrs = cffInfo.gsubrs || [];
+    this.subrs = cffInfo.subrs || [];
+    this.cmap = cmap;
+    this.glyphNameMap = getGlyphsUnicode();
+    this.gsubrsBias = getSubroutineBias(this.gsubrs);
+    this.subrsBias = getSubroutineBias(this.subrs);
+    this.isCFFCIDFont = cffInfo.isCFFCIDFont;
+    this.fdSelect = cffInfo.fdSelect;
+    this.fdArray = cffInfo.fdArray;
+  }
+  compileGlyphImpl(code, cmds, glyphId) {
+    compileCharString(code, cmds, this, glyphId);
+  }
+}
+class FontRendererFactory {
+  static create(font, seacAnalysisEnabled) {
+    const data = new Uint8Array(font.data),
+      view = new DataView(data.buffer);
+    let cmap, glyf, loca, cff, indexToLocFormat, unitsPerEm;
+    const numTables = view.getUint16(4);
+    for (let i = 0, p = 12; i < numTables; i++, p += 16) {
+      const tag = bytesToString(data.subarray(p, p + 4));
+      const offset = view.getUint32(p + 8);
+      const length = view.getUint32(p + 12);
+      switch (tag) {
+        case "cmap":
+          cmap = parseCmap(data, offset, offset + length);
+          break;
+        case "glyf":
+          glyf = data.subarray(offset, offset + length);
+          break;
+        case "loca":
+          loca = data.subarray(offset, offset + length);
+          break;
+        case "head":
+          unitsPerEm = view.getUint16(offset + 18);
+          indexToLocFormat = view.getUint16(offset + 50);
+          break;
+        case "CFF ":
+          cff = parseCff(data, offset, offset + length, seacAnalysisEnabled);
+          break;
+      }
+    }
+    if (glyf) {
+      const fontMatrix = !unitsPerEm ? font.fontMatrix : [1 / unitsPerEm, 0, 0, 1 / unitsPerEm, 0, 0];
+      return new TrueTypeCompiled(parseGlyfTable(glyf, loca, indexToLocFormat), cmap, fontMatrix);
+    }
+    return new Type2Compiled(cff, cmap, font.fontMatrix);
+  }
+}
+export { FontRendererFactory };
