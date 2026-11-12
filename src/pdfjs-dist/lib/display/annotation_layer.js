@@ -1,8 +1,4 @@
-/**
- * @licstart The following is the entire license notice for the
- * Javascript code in this page
- *
- * Copyright 2020 Mozilla Foundation
+/* Copyright 2024 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,1034 +11,3628 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
- * @licend The above is the entire license notice for the
- * Javascript code in this page
  */
-"use strict";
-
-Object.defineProperty(exports, "__esModule", {
-  value: true
-});
-exports.AnnotationLayer = void 0;
-
-var _display_utils = require("./display_utils.js");
-
-var _util = require("../shared/util.js");
-
+import "core-js/modules/es.array.includes.js";
+import "core-js/modules/es.array.push.js";
+import "core-js/modules/es.iterator.constructor.js";
+import "core-js/modules/es.iterator.find.js";
+import "core-js/modules/es.iterator.flat-map.js";
+import "core-js/modules/es.iterator.map.js";
+import "core-js/modules/es.json.stringify.js";
+import "core-js/modules/es.map.get-or-insert.js";
+import "core-js/modules/es.map.get-or-insert-computed.js";
+import "core-js/modules/es.set.difference.v2.js";
+import "core-js/modules/es.set.intersection.v2.js";
+import "core-js/modules/es.set.is-disjoint-from.v2.js";
+import "core-js/modules/es.set.is-subset-of.v2.js";
+import "core-js/modules/es.set.is-superset-of.v2.js";
+import "core-js/modules/es.set.symmetric-difference.v2.js";
+import "core-js/modules/es.set.union.v2.js";
+import { AnnotationBorderStyleType, AnnotationEditorPrefix, AnnotationEditorType, AnnotationPrefix, AnnotationType, FeatureTest, LINE_FACTOR, makeArr, shadow, SVG_NS, unreachable, Util, warn } from "../shared/util.js";
+import { PDFDateString, renderRichText, setLayerDimensions } from "./dom_utils.js";
+import { AnnotationStorage } from "./annotation_storage.js";
+import { ColorConverters } from "../shared/scripting_utils.js";
+import { DOMSVGFactory } from "./svg_factory.js";
+const DEFAULT_FONT_SIZE = 9;
+const GetElementsByNameSet = new WeakSet();
+const TIMEZONE_OFFSET = new Date().getTimezoneOffset() * 60 * 1000;
 class AnnotationElementFactory {
   static create(parameters) {
     const subtype = parameters.data.annotationType;
-
     switch (subtype) {
-      case _util.AnnotationType.LINK:
+      case AnnotationType.LINK:
         return new LinkAnnotationElement(parameters);
-
-      case _util.AnnotationType.TEXT:
+      case AnnotationType.TEXT:
         return new TextAnnotationElement(parameters);
-
-      case _util.AnnotationType.WIDGET:
+      case AnnotationType.WIDGET:
         const fieldType = parameters.data.fieldType;
-
         switch (fieldType) {
           case "Tx":
             return new TextWidgetAnnotationElement(parameters);
-
           case "Btn":
             if (parameters.data.radioButton) {
               return new RadioButtonWidgetAnnotationElement(parameters);
             } else if (parameters.data.checkBox) {
               return new CheckboxWidgetAnnotationElement(parameters);
             }
-
             return new PushButtonWidgetAnnotationElement(parameters);
-
           case "Ch":
             return new ChoiceWidgetAnnotationElement(parameters);
+          case "Sig":
+            return new SignatureWidgetAnnotationElement(parameters);
         }
-
         return new WidgetAnnotationElement(parameters);
-
-      case _util.AnnotationType.POPUP:
+      case AnnotationType.POPUP:
         return new PopupAnnotationElement(parameters);
-
-      case _util.AnnotationType.FREETEXT:
+      case AnnotationType.FREETEXT:
         return new FreeTextAnnotationElement(parameters);
-
-      case _util.AnnotationType.LINE:
+      case AnnotationType.LINE:
         return new LineAnnotationElement(parameters);
-
-      case _util.AnnotationType.SQUARE:
+      case AnnotationType.SQUARE:
         return new SquareAnnotationElement(parameters);
-
-      case _util.AnnotationType.CIRCLE:
+      case AnnotationType.CIRCLE:
         return new CircleAnnotationElement(parameters);
-
-      case _util.AnnotationType.POLYLINE:
+      case AnnotationType.POLYLINE:
         return new PolylineAnnotationElement(parameters);
-
-      case _util.AnnotationType.CARET:
+      case AnnotationType.CARET:
         return new CaretAnnotationElement(parameters);
-
-      case _util.AnnotationType.INK:
+      case AnnotationType.INK:
         return new InkAnnotationElement(parameters);
-
-      case _util.AnnotationType.POLYGON:
+      case AnnotationType.POLYGON:
         return new PolygonAnnotationElement(parameters);
-
-      case _util.AnnotationType.HIGHLIGHT:
+      case AnnotationType.HIGHLIGHT:
         return new HighlightAnnotationElement(parameters);
-
-      case _util.AnnotationType.UNDERLINE:
+      case AnnotationType.UNDERLINE:
         return new UnderlineAnnotationElement(parameters);
-
-      case _util.AnnotationType.SQUIGGLY:
+      case AnnotationType.SQUIGGLY:
         return new SquigglyAnnotationElement(parameters);
-
-      case _util.AnnotationType.STRIKEOUT:
+      case AnnotationType.STRIKEOUT:
         return new StrikeOutAnnotationElement(parameters);
-
-      case _util.AnnotationType.STAMP:
+      case AnnotationType.STAMP:
         return new StampAnnotationElement(parameters);
-
-      case _util.AnnotationType.FILEATTACHMENT:
+      case AnnotationType.FILEATTACHMENT:
         return new FileAttachmentAnnotationElement(parameters);
-
+      case AnnotationType.RICHMEDIA:
+      case AnnotationType.SCREEN:
+      case AnnotationType.SOUND:
+        return new MediaAnnotationElement(parameters);
       default:
         return new AnnotationElement(parameters);
     }
   }
-
 }
-
 class AnnotationElement {
-  constructor(parameters, isRenderable = false, ignoreBorder = false) {
+  #updates = null;
+  #hasBorder = false;
+  #popupElement = null;
+  constructor(parameters, {
+    isRenderable = false,
+    ignoreBorder = false,
+    createQuadrilaterals = false
+  } = {}) {
     this.isRenderable = isRenderable;
     this.data = parameters.data;
     this.layer = parameters.layer;
-    this.page = parameters.page;
-    this.viewport = parameters.viewport;
     this.linkService = parameters.linkService;
     this.downloadManager = parameters.downloadManager;
     this.imageResourcesPath = parameters.imageResourcesPath;
-    this.renderInteractiveForms = parameters.renderInteractiveForms;
-    this.svgFactory = parameters.svgFactory;
-
+    this.renderForms = parameters.renderForms;
+    this.annotationStorage = parameters.annotationStorage;
+    this.enableComment = parameters.enableComment;
+    this.enableAnnotationEditing = parameters.enableAnnotationEditing !== false;
+    this.enableScripting = parameters.enableScripting;
+    this.hasJSActions = parameters.hasJSActions;
+    this._fieldObjects = parameters.fieldObjects;
+    this.parent = parameters.parent;
+    this.hasOwnCommentButton = false;
     if (isRenderable) {
-      this.container = this._createContainer(ignoreBorder);
+      this.contentElement = this.container = this._createContainer(ignoreBorder);
+    }
+    if (createQuadrilaterals) {
+      this._createQuadrilaterals();
     }
   }
-
-  _createContainer(ignoreBorder = false) {
-    const data = this.data,
-          page = this.page,
-          viewport = this.viewport;
-    const container = document.createElement("section");
-    let width = data.rect[2] - data.rect[0];
-    let height = data.rect[3] - data.rect[1];
-    container.setAttribute("data-annotation-id", data.id);
-
-    const rect = _util.Util.normalizeRect([data.rect[0], page.view[3] - data.rect[1] + page.view[1], data.rect[2], page.view[3] - data.rect[3] + page.view[1]]);
-
-    container.style.transform = `matrix(${viewport.transform.join(",")})`;
-    container.style.transformOrigin = `-${rect[0]}px -${rect[1]}px`;
-
-    if (!ignoreBorder && data.borderStyle.width > 0) {
-      container.style.borderWidth = `${data.borderStyle.width}px`;
-
-      if (data.borderStyle.style !== _util.AnnotationBorderStyleType.UNDERLINE) {
-        width = width - 2 * data.borderStyle.width;
-        height = height - 2 * data.borderStyle.width;
+  static _hasPopupData({
+    contentsObj,
+    richText
+  }) {
+    return !!(contentsObj?.str || richText?.str);
+  }
+  static get _svgFactory() {
+    return shadow(this, "_svgFactory", new DOMSVGFactory());
+  }
+  get _isEditable() {
+    return this.enableAnnotationEditing && this.data.isEditable;
+  }
+  get hasPopupData() {
+    return AnnotationElement._hasPopupData(this.data) || this.enableComment && !!this.commentText;
+  }
+  get commentData() {
+    const {
+      data
+    } = this;
+    const editor = this.annotationStorage?.getEditor(data.id);
+    return editor ? editor.getData() : data;
+  }
+  get hasCommentButton() {
+    return this.enableComment && this.hasPopupElement;
+  }
+  get commentButtonPosition() {
+    const editor = this.annotationStorage?.getEditor(this.data.id);
+    if (editor) {
+      return editor.commentButtonPositionInPage;
+    }
+    const {
+      quadPoints,
+      inkLists,
+      rect
+    } = this.data;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    if (quadPoints?.length >= 8) {
+      for (let i = 0; i < quadPoints.length; i += 8) {
+        if (quadPoints[i + 1] > maxY) {
+          maxY = quadPoints[i + 1];
+          maxX = quadPoints[i + 2];
+        } else if (quadPoints[i + 1] === maxY) {
+          maxX = Math.max(maxX, quadPoints[i + 2]);
+        }
       }
-
+      return [maxX, maxY];
+    }
+    if (inkLists?.length >= 1) {
+      for (const inkList of inkLists) {
+        for (let i = 0, ii = inkList.length; i < ii; i += 2) {
+          if (inkList[i + 1] > maxY) {
+            maxY = inkList[i + 1];
+            maxX = inkList[i];
+          } else if (inkList[i + 1] === maxY) {
+            maxX = Math.max(maxX, inkList[i]);
+          }
+        }
+      }
+      if (maxX !== Infinity) {
+        return [maxX, maxY];
+      }
+    }
+    return rect ? [rect[2], rect[3]] : null;
+  }
+  _normalizePoint(point) {
+    const {
+      page: {
+        view
+      },
+      viewport: {
+        rawDims: {
+          pageWidth,
+          pageHeight,
+          pageX,
+          pageY
+        }
+      }
+    } = this.parent;
+    point[1] = view[3] - point[1] + view[1];
+    point[0] = 100 * (point[0] - pageX) / pageWidth;
+    point[1] = 100 * (point[1] - pageY) / pageHeight;
+    return point;
+  }
+  get commentText() {
+    const {
+      data
+    } = this;
+    return this.annotationStorage.getRawValue(`${AnnotationEditorPrefix}${data.id}`)?.popup?.contents || data.contentsObj?.str || "";
+  }
+  set commentText(text) {
+    const {
+      data
+    } = this;
+    const popup = {
+      deleted: !text,
+      contents: text || ""
+    };
+    if (!this.annotationStorage.updateEditor(data.id, {
+      popup
+    })) {
+      this.annotationStorage.setValue(`${AnnotationEditorPrefix}${data.id}`, {
+        id: data.id,
+        annotationType: data.annotationType,
+        page: this.parent.page,
+        popup,
+        popupRef: data.popupRef,
+        modificationDate: new Date()
+      });
+    }
+    if (!text) {
+      this.removePopup();
+    }
+  }
+  removePopup() {
+    (this.#popupElement?.popup || this.popup)?.remove();
+    this.#popupElement = this.popup = null;
+  }
+  updateEdited(params) {
+    if (!this.container) {
+      return;
+    }
+    if (params.rect) {
+      this.#updates ||= {
+        rect: this.data.rect.slice(0)
+      };
+    }
+    const {
+      rect,
+      popup: newPopup
+    } = params;
+    if (rect) {
+      this.#setRectEdited(rect);
+    }
+    let popup = this.#popupElement?.popup || this.popup;
+    if (!popup && newPopup?.text) {
+      this._createPopup(newPopup);
+      popup = this.#popupElement.popup;
+    }
+    if (!popup) {
+      return;
+    }
+    popup.updateEdited(params);
+    if (newPopup?.deleted) {
+      popup.remove();
+      this.#popupElement = null;
+      this.popup = null;
+    }
+  }
+  resetEdited() {
+    if (!this.#updates) {
+      return;
+    }
+    this.#setRectEdited(this.#updates.rect);
+    this.#popupElement?.popup.resetEdited();
+    this.#updates = null;
+  }
+  #setRectEdited(rect) {
+    const {
+      container: {
+        style
+      },
+      data: {
+        rect: currentRect,
+        rotation
+      },
+      parent: {
+        viewport: {
+          rawDims: {
+            pageWidth,
+            pageHeight,
+            pageX,
+            pageY
+          }
+        }
+      }
+    } = this;
+    currentRect?.splice(0, 4, ...rect);
+    style.left = `${100 * (rect[0] - pageX) / pageWidth}%`;
+    style.top = `${100 * (pageHeight - rect[3] + pageY) / pageHeight}%`;
+    if (rotation === 0) {
+      style.width = `${100 * (rect[2] - rect[0]) / pageWidth}%`;
+      style.height = `${100 * (rect[3] - rect[1]) / pageHeight}%`;
+    } else {
+      this.setRotation(rotation);
+    }
+  }
+  _createContainer(ignoreBorder) {
+    const {
+      data,
+      parent: {
+        page,
+        viewport
+      }
+    } = this;
+    const container = document.createElement("section");
+    container.setAttribute("data-annotation-id", data.id);
+    if (!(this instanceof WidgetAnnotationElement) && !(this instanceof LinkAnnotationElement) && !(this instanceof MediaAnnotationElement)) {
+      container.tabIndex = 0;
+    }
+    const {
+      style
+    } = container;
+    style.zIndex = this.parent.zIndex;
+    this.parent.zIndex += 2;
+    if (data.alternativeText) {
+      container.title = data.alternativeText;
+    }
+    if (data.noRotate) {
+      container.classList.add("norotate");
+    }
+    if (!data.rect || this instanceof PopupAnnotationElement) {
+      const {
+        rotation
+      } = data;
+      if (!data.hasOwnCanvas && rotation !== 0) {
+        this.setRotation(rotation, container);
+      }
+      return container;
+    }
+    const {
+      width,
+      height
+    } = this;
+    if (!ignoreBorder && data.borderStyle.width > 0) {
+      style.borderWidth = `${data.borderStyle.width}px`;
       const horizontalRadius = data.borderStyle.horizontalCornerRadius;
       const verticalRadius = data.borderStyle.verticalCornerRadius;
-
       if (horizontalRadius > 0 || verticalRadius > 0) {
-        const radius = `${horizontalRadius}px / ${verticalRadius}px`;
-        container.style.borderRadius = radius;
+        const radius = `calc(${horizontalRadius}px * var(--total-scale-factor)) / calc(${verticalRadius}px * var(--total-scale-factor))`;
+        style.borderRadius = radius;
       }
-
       switch (data.borderStyle.style) {
-        case _util.AnnotationBorderStyleType.SOLID:
-          container.style.borderStyle = "solid";
+        case AnnotationBorderStyleType.SOLID:
+          style.borderStyle = "solid";
           break;
-
-        case _util.AnnotationBorderStyleType.DASHED:
-          container.style.borderStyle = "dashed";
+        case AnnotationBorderStyleType.DASHED:
+          style.borderStyle = "dashed";
           break;
-
-        case _util.AnnotationBorderStyleType.BEVELED:
-          (0, _util.warn)("Unimplemented border style: beveled");
+        case AnnotationBorderStyleType.BEVELED:
+          warn("Unimplemented border style: beveled");
           break;
-
-        case _util.AnnotationBorderStyleType.INSET:
-          (0, _util.warn)("Unimplemented border style: inset");
+        case AnnotationBorderStyleType.INSET:
+          warn("Unimplemented border style: inset");
           break;
-
-        case _util.AnnotationBorderStyleType.UNDERLINE:
-          container.style.borderBottomStyle = "solid";
+        case AnnotationBorderStyleType.UNDERLINE:
+          style.borderBottomStyle = "solid";
           break;
-
         default:
           break;
       }
-
-      if (data.color) {
-        container.style.borderColor = _util.Util.makeCssRgb(data.color[0] | 0, data.color[1] | 0, data.color[2] | 0);
+      const borderColor = data.borderColor || null;
+      if (borderColor) {
+        this.#hasBorder = true;
+        style.borderColor = Util.makeHexColor(...borderColor);
       } else {
-        container.style.borderWidth = 0;
+        style.borderWidth = 0;
       }
     }
-
-    container.style.left = `${rect[0]}px`;
-    container.style.top = `${rect[1]}px`;
-    container.style.width = `${width}px`;
-    container.style.height = `${height}px`;
+    const rect = Util.normalizeRect([data.rect[0], page.view[3] - data.rect[1] + page.view[1], data.rect[2], page.view[3] - data.rect[3] + page.view[1]]);
+    const {
+      pageWidth,
+      pageHeight,
+      pageX,
+      pageY
+    } = viewport.rawDims;
+    style.left = `${100 * (rect[0] - pageX) / pageWidth}%`;
+    style.top = `${100 * (rect[1] - pageY) / pageHeight}%`;
+    const {
+      rotation
+    } = data;
+    if (data.hasOwnCanvas || rotation === 0) {
+      style.width = `${100 * width / pageWidth}%`;
+      style.height = `${100 * height / pageHeight}%`;
+    } else {
+      this.setRotation(rotation, container);
+    }
     return container;
   }
-
-  _createPopup(container, trigger, data) {
-    if (!trigger) {
-      trigger = document.createElement("div");
-      trigger.style.height = container.style.height;
-      trigger.style.width = container.style.width;
-      container.appendChild(trigger);
+  setRotation(angle, container = this.container) {
+    if (!this.data.rect) {
+      return;
     }
-
-    const popupElement = new PopupElement({
-      container,
-      trigger,
-      color: data.color,
-      title: data.title,
-      modificationDate: data.modificationDate,
-      contents: data.contents,
-      hideWrapper: true
+    const {
+      pageWidth,
+      pageHeight
+    } = this.parent.viewport.rawDims;
+    let {
+      width,
+      height
+    } = this;
+    if (angle % 180 !== 0) {
+      [width, height] = [height, width];
+    }
+    container.style.width = `${100 * width / pageWidth}%`;
+    container.style.height = `${100 * height / pageHeight}%`;
+    container.setAttribute("data-main-rotation", (360 - angle) % 360);
+  }
+  get _commonActions() {
+    const setColor = (jsName, styleName, event) => {
+      const color = event.detail[jsName];
+      const colorType = color[0];
+      const colorArray = color.slice(1);
+      event.target.style[styleName] = ColorConverters[`${colorType}_HTML`](colorArray);
+      this.annotationStorage.setValue(this.data.id, {
+        [styleName]: ColorConverters[`${colorType}_rgb`](colorArray)
+      });
+    };
+    return shadow(this, "_commonActions", {
+      display: event => {
+        const {
+          display
+        } = event.detail;
+        const hidden = display % 2 === 1;
+        this.container.style.visibility = hidden ? "hidden" : "visible";
+        this.annotationStorage.setValue(this.data.id, {
+          noView: hidden,
+          noPrint: display === 1 || display === 2
+        });
+      },
+      print: event => {
+        this.annotationStorage.setValue(this.data.id, {
+          noPrint: !event.detail.print
+        });
+      },
+      hidden: event => {
+        const {
+          hidden
+        } = event.detail;
+        this.container.style.visibility = hidden ? "hidden" : "visible";
+        this.annotationStorage.setValue(this.data.id, {
+          noPrint: hidden,
+          noView: hidden
+        });
+      },
+      focus: event => {
+        setTimeout(() => event.target.focus({
+          preventScroll: false
+        }), 0);
+      },
+      userName: event => {
+        event.target.title = event.detail.userName;
+      },
+      readonly: event => {
+        event.target.disabled = event.detail.readonly;
+      },
+      required: event => {
+        this._setRequired(event.target, event.detail.required);
+      },
+      bgColor: event => {
+        setColor("bgColor", "backgroundColor", event);
+      },
+      fillColor: event => {
+        setColor("fillColor", "backgroundColor", event);
+      },
+      fgColor: event => {
+        setColor("fgColor", "color", event);
+      },
+      textColor: event => {
+        setColor("textColor", "color", event);
+      },
+      borderColor: event => {
+        setColor("borderColor", "borderColor", event);
+      },
+      strokeColor: event => {
+        setColor("strokeColor", "borderColor", event);
+      },
+      rotation: event => {
+        const angle = event.detail.rotation;
+        this.setRotation(angle);
+        this.annotationStorage.setValue(this.data.id, {
+          rotation: angle
+        });
+      }
     });
-    const popup = popupElement.render();
-    popup.style.left = container.style.width;
-    container.appendChild(popup);
   }
-
+  _dispatchEventFromSandbox(actions, jsEvent) {
+    const commonActions = this._commonActions;
+    for (const name of Object.keys(jsEvent.detail)) {
+      const action = actions[name] || commonActions[name];
+      action?.(jsEvent);
+    }
+  }
+  _setDefaultPropertiesFromJS(element) {
+    if (!this.enableScripting) {
+      return;
+    }
+    const storedData = this.annotationStorage.getRawValue(this.data.id);
+    if (!storedData) {
+      return;
+    }
+    const commonActions = this._commonActions;
+    for (const [actionName, detail] of Object.entries(storedData)) {
+      const action = commonActions[actionName];
+      if (action) {
+        const eventProxy = {
+          detail: {
+            [actionName]: detail
+          },
+          target: element
+        };
+        action(eventProxy);
+        delete storedData[actionName];
+      }
+    }
+  }
+  _createQuadrilaterals() {
+    if (!this.container) {
+      return;
+    }
+    const {
+      quadPoints
+    } = this.data;
+    if (!quadPoints) {
+      return;
+    }
+    const [rectBlX, rectBlY, rectTrX, rectTrY] = this.data.rect.map(Math.fround);
+    if (quadPoints.length === 8) {
+      const [trX, trY, blX, blY] = quadPoints.subarray(2, 6);
+      if (rectTrX === trX && rectTrY === trY && rectBlX === blX && rectBlY === blY) {
+        return;
+      }
+    }
+    const {
+      style
+    } = this.container;
+    let svgBuffer;
+    if (this.#hasBorder) {
+      const {
+        borderColor,
+        borderWidth
+      } = style;
+      style.borderWidth = 0;
+      svgBuffer = ["url('data:image/svg+xml;utf8,", `<svg xmlns="${SVG_NS}" preserveAspectRatio="none" viewBox="0 0 1 1">`, `<g fill="transparent" stroke="${borderColor}" stroke-width="${borderWidth}">`];
+      this.container.classList.add("hasBorder");
+    }
+    const width = rectTrX - rectBlX;
+    const height = rectTrY - rectBlY;
+    const svgFactory = AnnotationElement._svgFactory;
+    const svg = svgFactory.createElement("svg");
+    svg.classList.add("quadrilateralsContainer");
+    svg.setAttribute("width", 0);
+    svg.setAttribute("height", 0);
+    svg.role = "none";
+    const defs = svgFactory.createElement("defs");
+    svg.append(defs);
+    const clipPath = svgFactory.createElement("clipPath");
+    const id = `clippath_${this.data.id}`;
+    clipPath.setAttribute("id", id);
+    clipPath.setAttribute("clipPathUnits", "objectBoundingBox");
+    defs.append(clipPath);
+    for (let i = 2, ii = quadPoints.length; i < ii; i += 8) {
+      const trX = quadPoints[i];
+      const trY = quadPoints[i + 1];
+      const blX = quadPoints[i + 2];
+      const blY = quadPoints[i + 3];
+      const rect = svgFactory.createElement("rect");
+      const x = (blX - rectBlX) / width;
+      const y = (rectTrY - trY) / height;
+      const rectWidth = (trX - blX) / width;
+      const rectHeight = (trY - blY) / height;
+      rect.setAttribute("x", x);
+      rect.setAttribute("y", y);
+      rect.setAttribute("width", rectWidth);
+      rect.setAttribute("height", rectHeight);
+      clipPath.append(rect);
+      svgBuffer?.push(`<rect vector-effect="non-scaling-stroke" x="${x}" y="${y}" width="${rectWidth}" height="${rectHeight}"/>`);
+    }
+    if (this.#hasBorder) {
+      svgBuffer.push(`</g></svg>')`);
+      style.backgroundImage = svgBuffer.join("");
+    }
+    this.container.append(svg);
+    this.container.style.clipPath = `url(#${id})`;
+  }
+  _createPopup(popupData = null) {
+    const {
+      data
+    } = this;
+    let contentsObj, modificationDate;
+    if (popupData) {
+      contentsObj = {
+        str: popupData.text
+      };
+      modificationDate = popupData.date;
+    } else {
+      contentsObj = data.contentsObj;
+      modificationDate = data.modificationDate;
+    }
+    this.#popupElement = new PopupAnnotationElement({
+      data: {
+        color: data.color,
+        titleObj: data.titleObj,
+        modificationDate,
+        contentsObj,
+        richText: data.richText,
+        parentRect: data.rect,
+        borderStyle: 0,
+        id: `popup_${data.id}`,
+        rotation: data.rotation,
+        noRotate: true
+      },
+      linkService: this.linkService,
+      parent: this.parent,
+      elements: [this]
+    });
+  }
+  get hasPopupElement() {
+    return !!(this.#popupElement || this.popup || this.data.popupRef);
+  }
+  get extraPopupElement() {
+    return this.#popupElement;
+  }
   render() {
-    (0, _util.unreachable)("Abstract method `AnnotationElement.render` called");
+    unreachable("Abstract method `AnnotationElement.render` called");
   }
-
+  _getElementsByName(name, skipId = null) {
+    const fields = [];
+    if (this._fieldObjects) {
+      const fieldObj = this._fieldObjects.get(name) || [];
+      for (const {
+        page,
+        id,
+        exportValues
+      } of fieldObj) {
+        if (page === -1 || id === skipId) {
+          continue;
+        }
+        const exportValue = typeof exportValues === "string" ? exportValues : null;
+        const domElement = document.querySelector(`[data-element-id="${id}"]`);
+        if (domElement && !GetElementsByNameSet.has(domElement)) {
+          warn(`_getElementsByName - element not allowed: ${id}`);
+          continue;
+        }
+        fields.push({
+          id,
+          exportValue,
+          domElement
+        });
+      }
+      return fields;
+    }
+    for (const domElement of document.getElementsByName(name)) {
+      const {
+        exportValue
+      } = domElement;
+      const id = domElement.getAttribute("data-element-id");
+      if (id === skipId || !GetElementsByNameSet.has(domElement)) {
+        continue;
+      }
+      fields.push({
+        id,
+        exportValue,
+        domElement
+      });
+    }
+    return fields;
+  }
+  show() {
+    if (this.container) {
+      this.container.hidden = false;
+    }
+    this.popup?.maybeShow();
+  }
+  hide() {
+    if (this.container) {
+      this.container.hidden = true;
+    }
+    this.popup?.forceHide();
+  }
+  getElementsToTriggerPopup() {
+    return this.container;
+  }
+  addHighlightArea() {
+    const triggers = this.getElementsToTriggerPopup();
+    if (Array.isArray(triggers)) {
+      for (const element of triggers) {
+        element.classList.add("highlightArea");
+      }
+    } else {
+      triggers.classList.add("highlightArea");
+    }
+  }
+  _editOnDoubleClick() {
+    if (!this._isEditable) {
+      return;
+    }
+    const {
+      annotationEditorType: mode,
+      data: {
+        id: editId
+      }
+    } = this;
+    this.container.addEventListener("dblclick", () => {
+      this.linkService.eventBus?.dispatch("switchannotationeditormode", {
+        source: this,
+        mode,
+        editId,
+        mustEnterInEditMode: true
+      });
+    });
+  }
+  updateOC(optionalContentConfig) {
+    if (!this.data.oc || !optionalContentConfig) {
+      return;
+    }
+    const isVisible = optionalContentConfig.isVisible(this.data.oc);
+    if (isVisible) {
+      this.show();
+    } else {
+      this.hide();
+    }
+  }
+  get width() {
+    return this.data.rect[2] - this.data.rect[0];
+  }
+  get height() {
+    return this.data.rect[3] - this.data.rect[1];
+  }
+  _setBackgroundColor(element) {
+    const color = this.data.backgroundColor || null;
+    element.style.backgroundColor = color === null ? "transparent" : Util.makeHexColor(...color);
+  }
 }
-
-class LinkAnnotationElement extends AnnotationElement {
+class EditorAnnotationElement extends AnnotationElement {
   constructor(parameters) {
-    const isRenderable = !!(parameters.data.url || parameters.data.dest || parameters.data.action);
-    super(parameters, isRenderable);
+    super(parameters, {
+      isRenderable: true,
+      ignoreBorder: true
+    });
+    this.editor = parameters.editor;
   }
-
   render() {
-    this.container.className = "linkAnnotation";
+    this.container.className = "editorAnnotation";
+    return this.container;
+  }
+  createOrUpdatePopup() {
+    const {
+      editor
+    } = this;
+    if (!editor.hasComment) {
+      return;
+    }
+    this._createPopup(editor.comment);
+  }
+  get hasCommentButton() {
+    return this.enableComment && this.editor.hasComment;
+  }
+  get commentButtonPosition() {
+    return this.editor.commentButtonPositionInPage;
+  }
+  get commentText() {
+    return this.editor.comment.text;
+  }
+  set commentText(text) {
+    this.editor.comment = text;
+    if (!text) {
+      this.removePopup();
+    }
+  }
+  get commentData() {
+    return this.editor.getData();
+  }
+  remove() {
+    this.parent.removeAnnotation(this.data.id);
+    this.container.remove();
+    this.container = null;
+    this.removePopup();
+  }
+}
+class LinkAnnotationElement extends AnnotationElement {
+  constructor(parameters, options = null) {
+    super(parameters, {
+      isRenderable: true,
+      ignoreBorder: !!options?.ignoreBorder,
+      createQuadrilaterals: true
+    });
+    this.isTooltipOnly = parameters.data.isTooltipOnly;
+  }
+  render() {
     const {
       data,
       linkService
     } = this;
     const link = document.createElement("a");
-
+    link.setAttribute("data-element-id", data.id);
+    let isBound = false;
     if (data.url) {
-      (0, _display_utils.addLinkAttributes)(link, {
-        url: data.url,
-        target: data.newWindow ? _display_utils.LinkTarget.BLANK : linkService.externalLinkTarget,
-        rel: linkService.externalLinkRel,
-        enabled: linkService.externalLinkEnabled
-      });
+      linkService.addLinkAttributes(link, data.url, data.newWindow);
+      isBound = true;
     } else if (data.action) {
-      this._bindNamedAction(link, data.action);
+      this._bindNamedAction(link, data.action, data.overlaidText);
+      isBound = true;
+    } else if (data.attachment) {
+      this.#bindAttachment(link, data.attachmentId, data.attachment, data.overlaidText, data.attachmentDest);
+      isBound = true;
+    } else if (data.setOCGState) {
+      this.#bindSetOCGState(link, data.setOCGState, data.overlaidText);
+      isBound = true;
+    } else if (data.dest) {
+      this._bindLink(link, data.dest, data.overlaidText);
+      isBound = true;
     } else {
-      this._bindLink(link, data.dest);
+      if (data.actions && (data.actions.has("Action") || data.actions.has("Mouse Up") || data.actions.has("Mouse Down")) && this.enableScripting && this.hasJSActions) {
+        this._bindJSAction(link, data);
+        isBound = true;
+      }
+      if (data.resetForm) {
+        this._bindResetFormAction(link, data.resetForm);
+        isBound = true;
+      } else if (this.isTooltipOnly && !isBound) {
+        this._bindLink(link, "");
+        isBound = true;
+      }
     }
-
-    this.container.appendChild(link);
+    this.container.classList.add("linkAnnotation");
+    if (isBound) {
+      this.contentElement = link;
+      this.container.append(link);
+    }
     return this.container;
   }
-
-  _bindLink(link, destination) {
+  #setInternalLink() {
+    this.container.setAttribute("data-internal-link", "");
+  }
+  _bindLink(link, destination, overlaidText = "") {
     link.href = this.linkService.getDestinationHash(destination);
-
     link.onclick = () => {
       if (destination) {
-        this.linkService.navigateTo(destination);
+        this.linkService.goToDestination(destination);
       }
-
       return false;
     };
-
-    if (destination) {
-      link.className = "internalLink";
+    if (destination || destination === "") {
+      this.#setInternalLink();
+    }
+    if (overlaidText) {
+      link.title = overlaidText;
     }
   }
-
-  _bindNamedAction(link, action) {
+  _bindNamedAction(link, action, overlaidText = "") {
     link.href = this.linkService.getAnchorUrl("");
-
     link.onclick = () => {
       this.linkService.executeNamedAction(action);
       return false;
     };
-
-    link.className = "internalLink";
+    if (overlaidText) {
+      link.title = overlaidText;
+    }
+    this.#setInternalLink();
   }
-
+  #bindAttachment(link, attachmentId, attachment, overlaidText = "", dest = null) {
+    link.href = this.linkService.getAnchorUrl("");
+    if (attachment.description) {
+      link.title = attachment.description;
+    } else if (overlaidText) {
+      link.title = overlaidText;
+    }
+    const openAttachment = async () => {
+      const content = await this.linkService.getAttachmentContent(attachmentId);
+      if (content) {
+        this.downloadManager?.openOrDownloadData(content, attachment.filename, dest);
+      }
+    };
+    link.onclick = () => {
+      openAttachment();
+      return false;
+    };
+    this.#setInternalLink();
+  }
+  #bindSetOCGState(link, action, overlaidText = "") {
+    link.href = this.linkService.getAnchorUrl("");
+    link.onclick = () => {
+      this.linkService.executeSetOCGState(action);
+      return false;
+    };
+    if (overlaidText) {
+      link.title = overlaidText;
+    }
+    this.#setInternalLink();
+  }
+  _bindJSAction(link, {
+    actions,
+    id,
+    overlaidText
+  }) {
+    link.href = this.linkService.getAnchorUrl("");
+    const map = new Map([["Action", "onclick"], ["Mouse Up", "onmouseup"], ["Mouse Down", "onmousedown"]]);
+    for (const name of actions.keys()) {
+      const jsName = map.get(name);
+      if (!jsName) {
+        continue;
+      }
+      link[jsName] = () => {
+        this.linkService.eventBus?.dispatch("dispatcheventinsandbox", {
+          source: this,
+          detail: {
+            id,
+            name
+          }
+        });
+        return false;
+      };
+    }
+    if (overlaidText) {
+      link.title = overlaidText;
+    }
+    link.onclick ||= () => false;
+    this.#setInternalLink();
+  }
+  _bindResetFormAction(link, resetForm) {
+    const otherClickAction = link.onclick;
+    if (!otherClickAction) {
+      link.href = this.linkService.getAnchorUrl("");
+    }
+    this.#setInternalLink();
+    if (!this._fieldObjects) {
+      warn(`_bindResetFormAction - "resetForm" action not supported, ` + "ensure that the `fieldObjects` parameter is provided.");
+      if (!otherClickAction) {
+        link.onclick = () => false;
+      }
+      return;
+    }
+    link.onclick = () => {
+      otherClickAction?.();
+      const {
+        fields: resetFormFields,
+        refs: resetFormRefs,
+        include
+      } = resetForm;
+      const allFields = [];
+      if (resetFormFields.length !== 0 || resetFormRefs.length !== 0) {
+        const fieldIds = new Set(resetFormRefs);
+        for (const fieldName of resetFormFields) {
+          const fields = this._fieldObjects.get(fieldName) || [];
+          for (const {
+            id
+          } of fields) {
+            fieldIds.add(id);
+          }
+        }
+        const kidIdsById = new Map();
+        for (const fields of this._fieldObjects.values()) {
+          for (const {
+            id,
+            kidIds
+          } of fields) {
+            if (kidIds) {
+              kidIdsById.set(id, kidIds);
+            }
+          }
+        }
+        for (const id of fieldIds) {
+          for (const kidId of kidIdsById.get(id) || []) {
+            fieldIds.add(kidId);
+          }
+        }
+        for (const fields of this._fieldObjects.values()) {
+          for (const field of fields) {
+            if (fieldIds.has(field.id) === include) {
+              allFields.push(field);
+            }
+          }
+        }
+      } else {
+        for (const fields of this._fieldObjects.values()) {
+          allFields.push(...fields);
+        }
+      }
+      const storage = this.annotationStorage;
+      const allIds = [];
+      for (const field of allFields) {
+        const {
+          id
+        } = field;
+        allIds.push(id);
+        switch (field.type) {
+          case "text":
+            {
+              const value = field.defaultValue || "";
+              storage.setValue(id, {
+                value
+              });
+              break;
+            }
+          case "checkbox":
+          case "radiobutton":
+            {
+              const value = field.defaultValue === field.exportValues;
+              storage.setValue(id, {
+                value
+              });
+              break;
+            }
+          case "combobox":
+          case "listbox":
+            {
+              const value = field.defaultValue || "";
+              storage.setValue(id, {
+                value
+              });
+              break;
+            }
+          default:
+            continue;
+        }
+        const domElement = document.querySelector(`[data-element-id="${id}"]`);
+        if (!domElement) {
+          continue;
+        } else if (!GetElementsByNameSet.has(domElement)) {
+          warn(`_bindResetFormAction - element not allowed: ${id}`);
+          continue;
+        }
+        domElement.dispatchEvent(new Event("resetform"));
+      }
+      if (this.enableScripting) {
+        this.linkService.eventBus?.dispatch("dispatcheventinsandbox", {
+          source: this,
+          detail: {
+            id: "app",
+            ids: allIds,
+            name: "ResetForm"
+          }
+        });
+      }
+      return false;
+    };
+  }
 }
-
 class TextAnnotationElement extends AnnotationElement {
   constructor(parameters) {
-    const isRenderable = !!(parameters.data.hasPopup || parameters.data.title || parameters.data.contents);
-    super(parameters, isRenderable);
-  }
-
-  render() {
-    this.container.className = "textAnnotation";
-    const image = document.createElement("img");
-    image.style.height = this.container.style.height;
-    image.style.width = this.container.style.width;
-    image.src = this.imageResourcesPath + "annotation-" + this.data.name.toLowerCase() + ".svg";
-    image.alt = "[{{type}} Annotation]";
-    image.dataset.l10nId = "text_annotation_type";
-    image.dataset.l10nArgs = JSON.stringify({
-      type: this.data.name
+    super(parameters, {
+      isRenderable: true
     });
-
-    if (!this.data.hasPopup) {
-      this._createPopup(this.container, image, this.data);
+  }
+  render() {
+    this.container.classList.add("textAnnotation");
+    const image = document.createElement("img");
+    image.src = this.imageResourcesPath + "annotation-" + this.data.name.toLowerCase() + ".svg";
+    image.setAttribute("data-l10n-id", "pdfjs-text-annotation-type");
+    image.setAttribute("data-l10n-args", JSON.stringify({
+      type: this.data.name
+    }));
+    if (!this.data.popupRef && this.hasPopupData) {
+      this.hasOwnCommentButton = true;
+      this._createPopup();
     }
-
-    this.container.appendChild(image);
+    this.container.append(image);
     return this.container;
   }
-
 }
-
 class WidgetAnnotationElement extends AnnotationElement {
   render() {
     return this.container;
   }
-
+  _getKeyModifier(event) {
+    return FeatureTest.platform.isMac ? event.metaKey : event.ctrlKey;
+  }
+  _setEventListener(element, elementData, baseName, eventName, valueGetter) {
+    if (baseName.includes("mouse")) {
+      element.addEventListener(baseName, event => {
+        this.linkService.eventBus?.dispatch("dispatcheventinsandbox", {
+          source: this,
+          detail: {
+            id: this.data.id,
+            name: eventName,
+            value: valueGetter(event),
+            shift: event.shiftKey,
+            modifier: this._getKeyModifier(event)
+          }
+        });
+      });
+    } else {
+      element.addEventListener(baseName, event => {
+        if (baseName === "blur") {
+          if (!elementData.focused || !event.relatedTarget) {
+            return;
+          }
+          elementData.focused = false;
+        } else if (baseName === "focus") {
+          if (elementData.focused) {
+            return;
+          }
+          elementData.focused = true;
+        }
+        if (!valueGetter) {
+          return;
+        }
+        this.linkService.eventBus?.dispatch("dispatcheventinsandbox", {
+          source: this,
+          detail: {
+            id: this.data.id,
+            name: eventName,
+            value: valueGetter(event)
+          }
+        });
+      });
+    }
+  }
+  _setEventListeners(element, elementData, names, getter) {
+    const {
+      actions
+    } = this.data;
+    for (const [baseName, eventName] of names) {
+      if (eventName === "Action" || actions?.has(eventName)) {
+        if (eventName === "Focus" || eventName === "Blur") {
+          elementData ||= {
+            focused: false
+          };
+        }
+        this._setEventListener(element, elementData, baseName, eventName, getter);
+        if (eventName === "Focus" && !actions?.has("Blur")) {
+          this._setEventListener(element, elementData, "blur", "Blur", null);
+        } else if (eventName === "Blur" && !actions?.has("Focus")) {
+          this._setEventListener(element, elementData, "focus", "Focus", null);
+        }
+      }
+    }
+  }
+  _setTextStyle(element) {
+    const TEXT_ALIGNMENT = ["left", "center", "right"];
+    const {
+      fontColor
+    } = this.data.defaultAppearanceData;
+    const fontSize = this.data.defaultAppearanceData.fontSize || DEFAULT_FONT_SIZE;
+    const style = element.style;
+    let computedFontSize;
+    const BORDER_SIZE = 2;
+    const roundToOneDecimal = x => Math.round(10 * x) / 10;
+    if (this.data.multiLine) {
+      const height = Math.abs(this.data.rect[3] - this.data.rect[1] - BORDER_SIZE);
+      const numberOfLines = Math.round(height / (LINE_FACTOR * fontSize)) || 1;
+      const lineHeight = height / numberOfLines;
+      computedFontSize = Math.min(fontSize, roundToOneDecimal(lineHeight / LINE_FACTOR));
+    } else {
+      const height = Math.abs(this.data.rect[3] - this.data.rect[1] - BORDER_SIZE);
+      computedFontSize = Math.min(fontSize, roundToOneDecimal(height / LINE_FACTOR));
+    }
+    style.fontSize = `calc(${computedFontSize}px * var(--total-scale-factor))`;
+    style.color = Util.makeHexColor(...fontColor);
+    if (this.data.textAlignment !== null && !this.data.comb) {
+      style.textAlign = TEXT_ALIGNMENT[this.data.textAlignment];
+    }
+  }
+  _setRequired(element, isRequired) {
+    if (isRequired) {
+      element.setAttribute("required", true);
+    } else {
+      element.removeAttribute("required");
+    }
+    element.setAttribute("aria-required", isRequired);
+  }
 }
-
 class TextWidgetAnnotationElement extends WidgetAnnotationElement {
   constructor(parameters) {
-    const isRenderable = parameters.renderInteractiveForms || !parameters.data.hasAppearance && !!parameters.data.fieldValue;
-    super(parameters, isRenderable);
+    const isRenderable = parameters.renderForms || parameters.data.hasOwnCanvas || !parameters.data.hasAppearance && !!parameters.data.fieldValue;
+    super(parameters, {
+      isRenderable
+    });
   }
-
+  setPropertyOnSiblings(base, key, value, keyInStorage) {
+    const storage = this.annotationStorage;
+    for (const element of this._getElementsByName(base.name, base.id)) {
+      if (element.domElement) {
+        element.domElement[key] = value;
+      }
+      storage.setValue(element.id, {
+        [keyInStorage]: value
+      });
+    }
+  }
   render() {
-    const TEXT_ALIGNMENT = ["left", "center", "right"];
-    this.container.className = "textWidgetAnnotation";
+    const storage = this.annotationStorage;
+    const id = this.data.id;
+    this.container.classList.add("textWidgetAnnotation");
     let element = null;
-
-    if (this.renderInteractiveForms) {
+    if (this.renderForms) {
+      const storedData = storage.getValue(id, {
+        value: this.data.fieldValue
+      });
+      let textContent = storedData.value || "";
+      const maxLen = storage.getValue(id, {
+        charLimit: this.data.maxLen
+      }).charLimit;
+      if (maxLen && textContent.length > maxLen) {
+        textContent = textContent.slice(0, maxLen);
+      }
+      let fieldFormattedValues = storedData.formattedValue || this.data.textContent?.join("\n") || null;
+      if (fieldFormattedValues && this.data.comb) {
+        fieldFormattedValues = fieldFormattedValues.replaceAll(/\s+/g, "");
+      }
+      const elementData = {
+        userValue: textContent,
+        formattedValue: fieldFormattedValues,
+        lastCommittedValue: null,
+        commitKey: 1,
+        focused: false
+      };
       if (this.data.multiLine) {
         element = document.createElement("textarea");
-        element.textContent = this.data.fieldValue;
+        element.textContent = fieldFormattedValues ?? textContent;
+        if (this.data.doNotScroll) {
+          element.style.overflowY = "hidden";
+        }
       } else {
         element = document.createElement("input");
-        element.type = "text";
-        element.setAttribute("value", this.data.fieldValue);
+        element.type = this.data.password ? "password" : "text";
+        element.setAttribute("value", fieldFormattedValues ?? textContent);
+        if (this.data.doNotScroll) {
+          element.style.overflowX = "hidden";
+        }
       }
-
+      if (this.data.hasOwnCanvas) {
+        this.container.classList.add("hasOwnCanvas");
+        if (storage.has(id)) {
+          this.container.classList.add("sandboxModified");
+        }
+      }
+      GetElementsByNameSet.add(element);
+      this.contentElement = element;
+      element.setAttribute("data-element-id", id);
       element.disabled = this.data.readOnly;
-
-      if (this.data.maxLen !== null) {
-        element.maxLength = this.data.maxLen;
+      element.name = this.data.fieldName;
+      element.tabIndex = 0;
+      const {
+        datetimeFormat,
+        datetimeType,
+        timeStep
+      } = this.data;
+      const hasDateOrTime = !!datetimeType && this.enableScripting;
+      if (datetimeFormat) {
+        element.title = datetimeFormat;
       }
-
+      this._setRequired(element, this.data.required);
+      if (maxLen) {
+        element.maxLength = maxLen;
+      }
+      element.addEventListener("input", event => {
+        storage.setValue(id, {
+          value: event.target.value
+        });
+        this.setPropertyOnSiblings(element, "value", event.target.value, "value");
+        elementData.formattedValue = null;
+      });
+      element.addEventListener("resetform", event => {
+        const defaultValue = this.data.defaultFieldValue ?? "";
+        element.value = elementData.userValue = defaultValue;
+        elementData.formattedValue = null;
+      });
+      let blurListener = event => {
+        const {
+          formattedValue
+        } = elementData;
+        if (formattedValue !== null && formattedValue !== undefined) {
+          event.target.value = formattedValue;
+        }
+        event.target.scrollLeft = 0;
+      };
+      if (this.enableScripting && this.hasJSActions) {
+        element.addEventListener("focus", event => {
+          if (elementData.focused) {
+            return;
+          }
+          const {
+            target
+          } = event;
+          if (hasDateOrTime) {
+            target.type = datetimeType;
+            if (timeStep) {
+              target.step = timeStep;
+            }
+          }
+          if (elementData.userValue) {
+            const value = elementData.userValue;
+            if (hasDateOrTime) {
+              if (datetimeType === "time") {
+                const date = new Date(value);
+                const parts = [date.getHours(), date.getMinutes(), date.getSeconds()];
+                target.value = parts.map(v => v.toString().padStart(2, "0")).join(":");
+              } else {
+                target.value = new Date(value - TIMEZONE_OFFSET).toISOString().split(datetimeType === "date" ? "T" : ".", 1)[0];
+              }
+            } else {
+              target.value = value;
+            }
+          }
+          elementData.lastCommittedValue = target.value;
+          elementData.commitKey = 1;
+          if (!this.data.actions?.has("Focus")) {
+            elementData.focused = true;
+          }
+        });
+        element.addEventListener("updatefromsandbox", jsEvent => {
+          this.container.classList.add("sandboxModified");
+          const actions = {
+            value(event) {
+              elementData.userValue = event.detail.value ?? "";
+              if (!hasDateOrTime) {
+                storage.setValue(id, {
+                  value: elementData.userValue.toString()
+                });
+              }
+              event.target.value = elementData.userValue;
+            },
+            formattedValue(event) {
+              const {
+                formattedValue
+              } = event.detail;
+              elementData.formattedValue = formattedValue;
+              if (formattedValue !== null && formattedValue !== undefined && event.target !== document.activeElement) {
+                event.target.value = formattedValue;
+              }
+              const data = {
+                formattedValue
+              };
+              if (hasDateOrTime) {
+                data.value = formattedValue;
+              }
+              storage.setValue(id, data);
+            },
+            selRange(event) {
+              event.target.setSelectionRange(...event.detail.selRange);
+            },
+            charLimit: event => {
+              const {
+                charLimit
+              } = event.detail;
+              const {
+                target
+              } = event;
+              if (charLimit === 0) {
+                target.removeAttribute("maxLength");
+                return;
+              }
+              target.setAttribute("maxLength", charLimit);
+              let value = elementData.userValue;
+              if (!value || value.length <= charLimit) {
+                return;
+              }
+              value = value.slice(0, charLimit);
+              target.value = elementData.userValue = value;
+              storage.setValue(id, {
+                value
+              });
+              this.linkService.eventBus?.dispatch("dispatcheventinsandbox", {
+                source: this,
+                detail: {
+                  id,
+                  name: "Keystroke",
+                  value,
+                  willCommit: true,
+                  commitKey: 1,
+                  selStart: target.selectionStart,
+                  selEnd: target.selectionEnd
+                }
+              });
+            }
+          };
+          this._dispatchEventFromSandbox(actions, jsEvent);
+        });
+        element.addEventListener("keydown", event => {
+          elementData.commitKey = 1;
+          let commitKey = -1;
+          if (event.key === "Escape") {
+            commitKey = 0;
+          } else if (event.key === "Enter" && !this.data.multiLine) {
+            commitKey = 2;
+          } else if (event.key === "Tab") {
+            elementData.commitKey = 3;
+          }
+          if (commitKey === -1) {
+            return;
+          }
+          const {
+            value
+          } = event.target;
+          if (elementData.lastCommittedValue === value) {
+            return;
+          }
+          elementData.lastCommittedValue = value;
+          elementData.userValue = value;
+          this.linkService.eventBus?.dispatch("dispatcheventinsandbox", {
+            source: this,
+            detail: {
+              id,
+              name: "Keystroke",
+              value,
+              willCommit: true,
+              commitKey,
+              selStart: event.target.selectionStart,
+              selEnd: event.target.selectionEnd
+            }
+          });
+        });
+        const _blurListener = blurListener;
+        blurListener = null;
+        element.addEventListener("blur", event => {
+          if (!elementData.focused || !event.relatedTarget) {
+            return;
+          }
+          if (!this.data.actions?.has("Blur")) {
+            elementData.focused = false;
+          }
+          const {
+            target
+          } = event;
+          let {
+            value
+          } = target;
+          if (hasDateOrTime) {
+            if (value && datetimeType === "time") {
+              const parts = value.split(":").map(v => parseInt(v, 10));
+              value = new Date(2000, 0, 1, parts[0], parts[1], parts[2] || 0).valueOf();
+              target.step = "";
+            } else {
+              if (!value.includes("T")) {
+                value = `${value}T00:00`;
+              }
+              value = new Date(value).valueOf();
+            }
+            target.type = "text";
+          }
+          elementData.userValue = value;
+          if (elementData.lastCommittedValue !== value) {
+            this.linkService.eventBus?.dispatch("dispatcheventinsandbox", {
+              source: this,
+              detail: {
+                id,
+                name: "Keystroke",
+                value,
+                willCommit: true,
+                commitKey: elementData.commitKey,
+                selStart: event.target.selectionStart,
+                selEnd: event.target.selectionEnd
+              }
+            });
+          }
+          _blurListener(event);
+        });
+        if (this.data.actions?.has("Keystroke")) {
+          element.addEventListener("beforeinput", event => {
+            elementData.lastCommittedValue = null;
+            const {
+              data,
+              target
+            } = event;
+            const {
+              value,
+              selectionStart,
+              selectionEnd
+            } = target;
+            let selStart = selectionStart,
+              selEnd = selectionEnd;
+            switch (event.inputType) {
+              case "deleteWordBackward":
+                {
+                  const wordCharPattern = /\w/;
+                  while (selStart > 0 && !wordCharPattern.test(value[selStart - 1])) {
+                    selStart--;
+                  }
+                  while (selStart > 0 && wordCharPattern.test(value[selStart - 1])) {
+                    selStart--;
+                  }
+                  break;
+                }
+              case "deleteWordForward":
+                {
+                  const match = value.substring(selectionStart).match(/^\W*\w*/);
+                  if (match) {
+                    selEnd += match[0].length;
+                  }
+                  break;
+                }
+              case "deleteContentBackward":
+                if (selectionStart === selectionEnd) {
+                  selStart -= 1;
+                }
+                break;
+              case "deleteContentForward":
+                if (selectionStart === selectionEnd) {
+                  selEnd += 1;
+                }
+                break;
+            }
+            event.preventDefault();
+            this.linkService.eventBus?.dispatch("dispatcheventinsandbox", {
+              source: this,
+              detail: {
+                id,
+                name: "Keystroke",
+                value,
+                change: data || "",
+                willCommit: false,
+                selStart,
+                selEnd
+              }
+            });
+          });
+        }
+        this._setEventListeners(element, elementData, [["focus", "Focus"], ["blur", "Blur"], ["mousedown", "Mouse Down"], ["mouseenter", "Mouse Enter"], ["mouseleave", "Mouse Exit"], ["mouseup", "Mouse Up"]], event => event.target.value);
+      }
+      if (blurListener) {
+        element.addEventListener("blur", blurListener);
+      }
       if (this.data.comb) {
         const fieldWidth = this.data.rect[2] - this.data.rect[0];
-        const combWidth = fieldWidth / this.data.maxLen;
+        const combWidth = fieldWidth / maxLen;
         element.classList.add("comb");
-        element.style.letterSpacing = `calc(${combWidth}px - 1ch)`;
+        element.style.setProperty("--comb-width", `calc(${combWidth}px * var(--total-scale-factor))`);
+        const alignment = this.data.textAlignment;
+        if (alignment === 1 || alignment === 2) {
+          const setCombOffset = () => {
+            const free = maxLen - element.value.length;
+            element.style.setProperty("--comb-offset", `${alignment === 1 ? free >> 1 : free}`);
+          };
+          setCombOffset();
+          for (const evt of ["input", "blur", "resetform", "updatefromsandbox"]) {
+            element.addEventListener(evt, setCombOffset);
+          }
+        }
       }
     } else {
       element = document.createElement("div");
       element.textContent = this.data.fieldValue;
       element.style.verticalAlign = "middle";
       element.style.display = "table-cell";
-      let font = null;
-
-      if (this.data.fontRefName && this.page.commonObjs.has(this.data.fontRefName)) {
-        font = this.page.commonObjs.get(this.data.fontRefName);
+      if (this.data.hasOwnCanvas) {
+        element.hidden = true;
       }
-
-      this._setTextStyle(element, font);
     }
-
-    if (this.data.textAlignment !== null) {
-      element.style.textAlign = TEXT_ALIGNMENT[this.data.textAlignment];
-    }
-
-    this.container.appendChild(element);
+    this._setTextStyle(element);
+    this._setBackgroundColor(element);
+    this._setDefaultPropertiesFromJS(element);
+    this.container.append(element);
     return this.container;
   }
-
-  _setTextStyle(element, font) {
-    const style = element.style;
-    style.fontSize = `${this.data.fontSize}px`;
-    style.direction = this.data.fontDirection < 0 ? "rtl" : "ltr";
-
-    if (!font) {
-      return;
-    }
-
-    let bold = "normal";
-
-    if (font.black) {
-      bold = "900";
-    } else if (font.bold) {
-      bold = "bold";
-    }
-
-    style.fontWeight = bold;
-    style.fontStyle = font.italic ? "italic" : "normal";
-    const fontFamily = font.loadedName ? `"${font.loadedName}", ` : "";
-    const fallbackName = font.fallbackName || "Helvetica, sans-serif";
-    style.fontFamily = fontFamily + fallbackName;
-  }
-
 }
-
+class SignatureWidgetAnnotationElement extends WidgetAnnotationElement {
+  constructor(parameters) {
+    super(parameters, {
+      isRenderable: !!parameters.data.hasOwnCanvas
+    });
+  }
+}
 class CheckboxWidgetAnnotationElement extends WidgetAnnotationElement {
   constructor(parameters) {
-    super(parameters, parameters.renderInteractiveForms);
+    super(parameters, {
+      isRenderable: parameters.renderForms
+    });
   }
-
   render() {
-    this.container.className = "buttonWidgetAnnotation checkBox";
+    const storage = this.annotationStorage;
+    const data = this.data;
+    const id = data.id;
+    let value = storage.getValue(id, {
+      value: data.exportValue === data.fieldValue
+    }).value;
+    if (typeof value === "string") {
+      value = value !== "Off";
+      storage.setValue(id, {
+        value
+      });
+    }
+    this.container.classList.add("buttonWidgetAnnotation", "checkBox");
     const element = document.createElement("input");
-    element.disabled = this.data.readOnly;
+    GetElementsByNameSet.add(element);
+    element.setAttribute("data-element-id", id);
+    element.disabled = data.readOnly;
+    this._setRequired(element, this.data.required);
     element.type = "checkbox";
-
-    if (this.data.fieldValue && this.data.fieldValue !== "Off") {
+    element.name = data.fieldName;
+    if (value) {
       element.setAttribute("checked", true);
     }
-
-    this.container.appendChild(element);
+    element.setAttribute("exportValue", data.exportValue);
+    element.tabIndex = 0;
+    element.addEventListener("change", event => {
+      const {
+        name,
+        checked
+      } = event.target;
+      for (const checkbox of this._getElementsByName(name, id)) {
+        const curChecked = checked && checkbox.exportValue === data.exportValue;
+        if (checkbox.domElement) {
+          checkbox.domElement.checked = curChecked;
+        }
+        storage.setValue(checkbox.id, {
+          value: curChecked
+        });
+      }
+      storage.setValue(id, {
+        value: checked
+      });
+    });
+    element.addEventListener("resetform", event => {
+      const defaultValue = data.defaultFieldValue || "Off";
+      event.target.checked = defaultValue === data.exportValue;
+    });
+    if (this.enableScripting && this.hasJSActions) {
+      element.addEventListener("updatefromsandbox", jsEvent => {
+        const actions = {
+          value(event) {
+            event.target.checked = event.detail.value !== "Off";
+            storage.setValue(id, {
+              value: event.target.checked
+            });
+          }
+        };
+        this._dispatchEventFromSandbox(actions, jsEvent);
+      });
+      this._setEventListeners(element, null, [["change", "Validate"], ["change", "Action"], ["focus", "Focus"], ["blur", "Blur"], ["mousedown", "Mouse Down"], ["mouseenter", "Mouse Enter"], ["mouseleave", "Mouse Exit"], ["mouseup", "Mouse Up"]], event => event.target.checked);
+    }
+    this._setDefaultPropertiesFromJS(element);
+    this.container.append(element);
     return this.container;
   }
-
 }
-
 class RadioButtonWidgetAnnotationElement extends WidgetAnnotationElement {
   constructor(parameters) {
-    super(parameters, parameters.renderInteractiveForms);
+    super(parameters, {
+      isRenderable: parameters.renderForms
+    });
   }
-
   render() {
-    this.container.className = "buttonWidgetAnnotation radioButton";
+    this.container.classList.add("buttonWidgetAnnotation", "radioButton");
+    const storage = this.annotationStorage;
+    const data = this.data;
+    const id = data.id;
+    let value = storage.getValue(id, {
+      value: data.buttonValue !== null && data.fieldValue === data.buttonValue
+    }).value;
+    if (typeof value === "string") {
+      value = value !== data.buttonValue;
+      storage.setValue(id, {
+        value
+      });
+    }
+    if (value) {
+      for (const radio of this._getElementsByName(data.fieldName, id)) {
+        storage.setValue(radio.id, {
+          value: false
+        });
+      }
+    }
     const element = document.createElement("input");
-    element.disabled = this.data.readOnly;
+    GetElementsByNameSet.add(element);
+    element.setAttribute("data-element-id", id);
+    element.disabled = data.readOnly;
+    this._setRequired(element, this.data.required);
     element.type = "radio";
-    element.name = this.data.fieldName;
-
-    if (this.data.fieldValue === this.data.buttonValue) {
+    element.name = data.fieldName;
+    if (value) {
       element.setAttribute("checked", true);
     }
-
-    this.container.appendChild(element);
+    element.tabIndex = 0;
+    element.addEventListener("change", event => {
+      const {
+        name,
+        checked
+      } = event.target;
+      for (const radio of this._getElementsByName(name, id)) {
+        storage.setValue(radio.id, {
+          value: false
+        });
+      }
+      storage.setValue(id, {
+        value: checked
+      });
+    });
+    element.addEventListener("resetform", event => {
+      const defaultValue = data.defaultFieldValue;
+      event.target.checked = defaultValue !== null && defaultValue !== undefined && defaultValue === data.buttonValue;
+    });
+    if (this.enableScripting && this.hasJSActions) {
+      const pdfButtonValue = data.buttonValue;
+      element.addEventListener("updatefromsandbox", jsEvent => {
+        const actions = {
+          value: event => {
+            const checked = pdfButtonValue === event.detail.value;
+            for (const radio of this._getElementsByName(event.target.name)) {
+              const curChecked = checked && radio.id === id;
+              if (radio.domElement) {
+                radio.domElement.checked = curChecked;
+              }
+              storage.setValue(radio.id, {
+                value: curChecked
+              });
+            }
+          }
+        };
+        this._dispatchEventFromSandbox(actions, jsEvent);
+      });
+      this._setEventListeners(element, null, [["change", "Validate"], ["change", "Action"], ["focus", "Focus"], ["blur", "Blur"], ["mousedown", "Mouse Down"], ["mouseenter", "Mouse Enter"], ["mouseleave", "Mouse Exit"], ["mouseup", "Mouse Up"]], event => event.target.checked);
+    }
+    this._setDefaultPropertiesFromJS(element);
+    this.container.append(element);
     return this.container;
   }
-
 }
-
 class PushButtonWidgetAnnotationElement extends LinkAnnotationElement {
+  constructor(parameters) {
+    super(parameters, {
+      ignoreBorder: parameters.data.hasAppearance
+    });
+  }
   render() {
     const container = super.render();
-    container.className = "buttonWidgetAnnotation pushButton";
+    container.classList.add("buttonWidgetAnnotation", "pushButton");
+    const linkElement = container.lastChild;
+    if (this.enableScripting && this.hasJSActions && linkElement) {
+      this._setDefaultPropertiesFromJS(linkElement);
+      linkElement.addEventListener("updatefromsandbox", jsEvent => {
+        this._dispatchEventFromSandbox({}, jsEvent);
+      });
+    }
     return container;
   }
-
 }
-
 class ChoiceWidgetAnnotationElement extends WidgetAnnotationElement {
   constructor(parameters) {
-    super(parameters, parameters.renderInteractiveForms);
+    super(parameters, {
+      isRenderable: parameters.renderForms
+    });
   }
-
   render() {
-    this.container.className = "choiceWidgetAnnotation";
+    this.container.classList.add("choiceWidgetAnnotation");
+    const storage = this.annotationStorage;
+    const id = this.data.id;
+    const storedData = storage.getValue(id, {
+      value: this.data.fieldValue
+    });
     const selectElement = document.createElement("select");
+    GetElementsByNameSet.add(selectElement);
+    selectElement.setAttribute("data-element-id", id);
     selectElement.disabled = this.data.readOnly;
-
+    this._setRequired(selectElement, this.data.required);
+    selectElement.name = this.data.fieldName;
+    selectElement.tabIndex = 0;
+    let addAnEmptyEntry = this.data.combo && this.data.options.length > 0;
     if (!this.data.combo) {
       selectElement.size = this.data.options.length;
-
       if (this.data.multiSelect) {
         selectElement.multiple = true;
       }
     }
-
+    selectElement.addEventListener("resetform", event => {
+      const defaultValue = this.data.defaultFieldValue;
+      for (const option of selectElement.options) {
+        option.selected = option.value === defaultValue;
+      }
+    });
+    const fixDisplayValue = (option, value) => {
+      const newValue = value.replaceAll(" ", "\u00A0");
+      option.textContent = newValue;
+      if (newValue !== value) {
+        option.setAttribute("display-value", value);
+      }
+    };
     for (const option of this.data.options) {
       const optionElement = document.createElement("option");
-      optionElement.textContent = option.displayValue;
+      fixDisplayValue(optionElement, option.displayValue);
       optionElement.value = option.exportValue;
-
-      if (this.data.fieldValue.includes(option.displayValue)) {
+      if (storedData.value.includes(option.exportValue)) {
         optionElement.setAttribute("selected", true);
+        addAnEmptyEntry = false;
       }
-
-      selectElement.appendChild(optionElement);
+      selectElement.append(optionElement);
     }
-
-    this.container.appendChild(selectElement);
+    let removeEmptyEntry = null;
+    if (addAnEmptyEntry) {
+      const noneOptionElement = document.createElement("option");
+      noneOptionElement.value = " ";
+      noneOptionElement.setAttribute("hidden", true);
+      noneOptionElement.setAttribute("selected", true);
+      selectElement.prepend(noneOptionElement);
+      removeEmptyEntry = () => {
+        noneOptionElement.remove();
+        selectElement.removeEventListener("input", removeEmptyEntry);
+        removeEmptyEntry = null;
+      };
+      selectElement.addEventListener("input", removeEmptyEntry);
+    }
+    const getValue = isExport => {
+      const name = isExport ? "value" : "textContent";
+      const {
+        options,
+        multiple
+      } = selectElement;
+      if (!multiple) {
+        return options.selectedIndex === -1 ? null : options[options.selectedIndex][name];
+      }
+      return Array.prototype.filter.call(options, option => option.selected).map(option => option[name]);
+    };
+    let selectedValues = getValue(false);
+    const getItems = event => {
+      const options = event.target.options;
+      return Array.prototype.map.call(options, option => ({
+        displayValue: option.getAttribute("display-value") || option.textContent,
+        exportValue: option.value
+      }));
+    };
+    if (this.enableScripting && this.hasJSActions) {
+      selectElement.addEventListener("updatefromsandbox", jsEvent => {
+        const actions = {
+          value(event) {
+            removeEmptyEntry?.();
+            const value = event.detail.value;
+            const values = new Set(Array.isArray(value) ? value : [value]);
+            for (const option of selectElement.options) {
+              option.selected = values.has(option.value);
+            }
+            storage.setValue(id, {
+              value: getValue(true)
+            });
+            selectedValues = getValue(false);
+          },
+          multipleSelection(event) {
+            selectElement.multiple = true;
+          },
+          remove(event) {
+            const options = selectElement.options;
+            const index = event.detail.remove;
+            options[index].selected = false;
+            selectElement.remove(index);
+            if (options.length > 0) {
+              const i = Array.prototype.findIndex.call(options, option => option.selected);
+              if (i === -1) {
+                options[0].selected = true;
+              }
+            }
+            storage.setValue(id, {
+              value: getValue(true),
+              items: getItems(event)
+            });
+            selectedValues = getValue(false);
+          },
+          clear(event) {
+            while (selectElement.length !== 0) {
+              selectElement.remove(0);
+            }
+            storage.setValue(id, {
+              value: null,
+              items: []
+            });
+            selectedValues = getValue(false);
+          },
+          insert(event) {
+            const {
+              index,
+              displayValue,
+              exportValue
+            } = event.detail.insert;
+            const selectChild = selectElement.children[index];
+            const optionElement = document.createElement("option");
+            fixDisplayValue(optionElement, displayValue);
+            optionElement.value = exportValue;
+            if (selectChild) {
+              selectChild.before(optionElement);
+            } else {
+              selectElement.append(optionElement);
+            }
+            storage.setValue(id, {
+              value: getValue(true),
+              items: getItems(event)
+            });
+            selectedValues = getValue(false);
+          },
+          items(event) {
+            const {
+              items
+            } = event.detail;
+            while (selectElement.length !== 0) {
+              selectElement.remove(0);
+            }
+            for (const item of items) {
+              const {
+                displayValue,
+                exportValue
+              } = item;
+              const optionElement = document.createElement("option");
+              fixDisplayValue(optionElement, displayValue);
+              optionElement.value = exportValue;
+              selectElement.append(optionElement);
+            }
+            if (selectElement.options.length > 0) {
+              selectElement.options[0].selected = true;
+            }
+            storage.setValue(id, {
+              value: getValue(true),
+              items: getItems(event)
+            });
+            selectedValues = getValue(false);
+          },
+          indices(event) {
+            const indices = new Set(event.detail.indices);
+            for (const option of event.target.options) {
+              option.selected = indices.has(option.index);
+            }
+            storage.setValue(id, {
+              value: getValue(true)
+            });
+            selectedValues = getValue(false);
+          },
+          editable(event) {
+            event.target.disabled = !event.detail.editable;
+          }
+        };
+        this._dispatchEventFromSandbox(actions, jsEvent);
+      });
+      selectElement.addEventListener("input", event => {
+        const exportValue = getValue(true);
+        const change = getValue(false);
+        storage.setValue(id, {
+          value: exportValue
+        });
+        event.preventDefault();
+        this.linkService.eventBus?.dispatch("dispatcheventinsandbox", {
+          source: this,
+          detail: {
+            id,
+            name: "Keystroke",
+            value: selectedValues,
+            change,
+            changeEx: exportValue,
+            willCommit: false,
+            commitKey: 1,
+            keyDown: false
+          }
+        });
+      });
+      this._setEventListeners(selectElement, null, [["focus", "Focus"], ["blur", "Blur"], ["mousedown", "Mouse Down"], ["mouseenter", "Mouse Enter"], ["mouseleave", "Mouse Exit"], ["mouseup", "Mouse Up"], ["input", "Action"], ["input", "Validate"]], event => event.target.value);
+    } else {
+      selectElement.addEventListener("input", function (event) {
+        storage.setValue(id, {
+          value: getValue(true)
+        });
+      });
+    }
+    if (this.data.combo) {
+      this._setTextStyle(selectElement);
+    } else {}
+    this._setBackgroundColor(selectElement);
+    this._setDefaultPropertiesFromJS(selectElement);
+    this.container.append(selectElement);
     return this.container;
   }
-
 }
-
 class PopupAnnotationElement extends AnnotationElement {
   constructor(parameters) {
-    const isRenderable = !!(parameters.data.title || parameters.data.contents);
-    super(parameters, isRenderable);
-  }
-
-  render() {
-    const IGNORE_TYPES = ["Line", "Square", "Circle", "PolyLine", "Polygon", "Ink"];
-    this.container.className = "popupAnnotation";
-
-    if (IGNORE_TYPES.includes(this.data.parentType)) {
-      return this.container;
-    }
-
-    const selector = `[data-annotation-id="${this.data.parentId}"]`;
-    const parentElement = this.layer.querySelector(selector);
-
-    if (!parentElement) {
-      return this.container;
-    }
-
-    const popup = new PopupElement({
-      container: this.container,
-      trigger: parentElement,
-      color: this.data.color,
-      title: this.data.title,
-      modificationDate: this.data.modificationDate,
-      contents: this.data.contents
+    const {
+      data,
+      elements,
+      parent
+    } = parameters;
+    const hasCommentManager = !!parent._commentManager;
+    super(parameters, {
+      isRenderable: !hasCommentManager && AnnotationElement._hasPopupData(data)
     });
-    const parentLeft = parseFloat(parentElement.style.left);
-    const parentWidth = parseFloat(parentElement.style.width);
-    this.container.style.transformOrigin = `-${parentLeft + parentWidth}px -${parentElement.style.top}`;
-    this.container.style.left = `${parentLeft + parentWidth}px`;
-    this.container.appendChild(popup.render());
+    this.elements = elements;
+    if (hasCommentManager && AnnotationElement._hasPopupData(data)) {
+      const popup = this.popup = this.#createPopup();
+      for (const element of elements) {
+        element.popup = popup;
+      }
+    } else {
+      this.popup = null;
+    }
+  }
+  #createPopup() {
+    return new PopupElement({
+      container: this.container,
+      color: this.data.color,
+      titleObj: this.data.titleObj,
+      modificationDate: this.data.modificationDate || this.data.creationDate,
+      contentsObj: this.data.contentsObj,
+      richText: this.data.richText,
+      rect: this.data.rect,
+      parentRect: this.data.parentRect || null,
+      parent: this.parent,
+      elements: this.elements,
+      open: this.data.open,
+      commentManager: this.parent._commentManager
+    });
+  }
+  render() {
+    const {
+      container
+    } = this;
+    container.classList.add("popupAnnotation");
+    container.role = "comment";
+    const popup = this.popup = this.#createPopup();
+    const elementIds = [];
+    for (const element of this.elements) {
+      element.popup = popup;
+      element.container.ariaHasPopup = "dialog";
+      elementIds.push(element.data.id);
+      element.addHighlightArea();
+    }
+    this.container.setAttribute("aria-controls", elementIds.map(id => `${AnnotationPrefix}${id}`).join(","));
     return this.container;
   }
-
 }
-
 class PopupElement {
-  constructor(parameters) {
-    this.container = parameters.container;
-    this.trigger = parameters.trigger;
-    this.color = parameters.color;
-    this.title = parameters.title;
-    this.modificationDate = parameters.modificationDate;
-    this.contents = parameters.contents;
-    this.hideWrapper = parameters.hideWrapper || false;
-    this.pinned = false;
-  }
-
-  render() {
-    const BACKGROUND_ENLIGHT = 0.7;
-    const wrapper = document.createElement("div");
-    wrapper.className = "popupWrapper";
-    this.hideElement = this.hideWrapper ? wrapper : this.container;
-    this.hideElement.setAttribute("hidden", true);
-    const popup = document.createElement("div");
-    popup.className = "popup";
-    const color = this.color;
-
-    if (color) {
-      const r = BACKGROUND_ENLIGHT * (255 - color[0]) + color[0];
-      const g = BACKGROUND_ENLIGHT * (255 - color[1]) + color[1];
-      const b = BACKGROUND_ENLIGHT * (255 - color[2]) + color[2];
-      popup.style.backgroundColor = _util.Util.makeCssRgb(r | 0, g | 0, b | 0);
-    }
-
-    const title = document.createElement("h1");
-    title.textContent = this.title;
-    popup.appendChild(title);
-
-    const dateObject = _display_utils.PDFDateString.toDateObject(this.modificationDate);
-
-    if (dateObject) {
-      const modificationDate = document.createElement("span");
-      modificationDate.textContent = "{{date}}, {{time}}";
-      modificationDate.dataset.l10nId = "annotation_date_string";
-      modificationDate.dataset.l10nArgs = JSON.stringify({
-        date: dateObject.toLocaleDateString(),
-        time: dateObject.toLocaleTimeString()
-      });
-      popup.appendChild(modificationDate);
-    }
-
-    const contents = this._formatContents(this.contents);
-
-    popup.appendChild(contents);
-    this.trigger.addEventListener("click", this._toggle.bind(this));
-    this.trigger.addEventListener("mouseover", this._show.bind(this, false));
-    this.trigger.addEventListener("mouseout", this._hide.bind(this, false));
-    popup.addEventListener("click", this._hide.bind(this, true));
-    wrapper.appendChild(popup);
-    return wrapper;
-  }
-
-  _formatContents(contents) {
-    const p = document.createElement("p");
-    const lines = contents.split(/(?:\r\n?|\n)/);
-
-    for (let i = 0, ii = lines.length; i < ii; ++i) {
-      const line = lines[i];
-      p.appendChild(document.createTextNode(line));
-
-      if (i < ii - 1) {
-        p.appendChild(document.createElement("br"));
+  #commentManager = null;
+  #boundKeyDown = this.#keyDown.bind(this);
+  #boundHide = this.#hide.bind(this);
+  #boundShow = this.#show.bind(this);
+  #boundToggle = this.#toggle.bind(this);
+  #color = null;
+  #container = null;
+  #contentsObj = null;
+  #dateObj = null;
+  #elements = null;
+  #parent = null;
+  #parentRect = null;
+  #pinned = false;
+  #popup = null;
+  #popupAbortController = null;
+  #position = null;
+  #commentButton = null;
+  #commentButtonPosition = null;
+  #popupPosition = null;
+  #rect = null;
+  #richText = null;
+  #titleObj = null;
+  #updates = null;
+  #wasVisible = false;
+  #firstElement = null;
+  #commentText = null;
+  constructor({
+    container,
+    color,
+    elements,
+    titleObj,
+    modificationDate,
+    contentsObj,
+    richText,
+    parent,
+    rect,
+    parentRect,
+    open,
+    commentManager = null
+  }) {
+    this.#container = container;
+    this.#titleObj = titleObj;
+    this.#contentsObj = contentsObj;
+    this.#richText = richText;
+    this.#parent = parent;
+    this.#color = color;
+    this.#rect = rect;
+    this.#parentRect = parentRect;
+    this.#elements = elements;
+    this.#commentManager = commentManager;
+    this.#firstElement = elements[0];
+    this.#dateObj = PDFDateString.toDateObject(modificationDate);
+    this.trigger = elements.flatMap(e => e.getElementsToTriggerPopup());
+    if (!commentManager) {
+      this.#addEventListeners();
+      this.#container.hidden = true;
+      if (open) {
+        this.#toggle();
       }
     }
-
-    return p;
   }
-
-  _toggle() {
-    if (this.pinned) {
-      this._hide(true);
+  #addEventListeners() {
+    if (this.#popupAbortController) {
+      return;
+    }
+    this.#popupAbortController = new AbortController();
+    const {
+      signal
+    } = this.#popupAbortController;
+    for (const element of this.trigger) {
+      element.addEventListener("click", this.#boundToggle, {
+        signal
+      });
+      element.addEventListener("pointerenter", this.#boundShow, {
+        signal
+      });
+      element.addEventListener("pointerleave", this.#boundHide, {
+        signal
+      });
+      element.classList.add("popupTriggerArea");
+    }
+    for (const element of this.#elements) {
+      element.container?.addEventListener("keydown", this.#boundKeyDown, {
+        signal
+      });
+    }
+  }
+  #setCommentButtonPosition() {
+    const element = this.#elements.find(e => e.hasCommentButton);
+    if (!element) {
+      return;
+    }
+    this.#commentButtonPosition = element._normalizePoint(element.commentButtonPosition);
+  }
+  renderCommentButton() {
+    if (this.#commentButton) {
+      if (!this.#commentButton.parentNode) {
+        this.#firstElement.container.after(this.#commentButton);
+      }
+      return;
+    }
+    if (!this.#commentButtonPosition) {
+      this.#setCommentButtonPosition();
+    }
+    if (!this.#commentButtonPosition) {
+      return;
+    }
+    const {
+      signal
+    } = this.#popupAbortController = new AbortController();
+    const hasOwnButton = this.#firstElement.hasOwnCommentButton;
+    const togglePopup = () => {
+      this.#commentManager.toggleCommentPopup(this, true, undefined, !hasOwnButton);
+    };
+    const showPopup = () => {
+      this.#commentManager.toggleCommentPopup(this, false, true, !hasOwnButton);
+    };
+    const hidePopup = () => {
+      this.#commentManager.toggleCommentPopup(this, false, false);
+    };
+    if (!hasOwnButton) {
+      const button = this.#commentButton = document.createElement("button");
+      button.className = "annotationCommentButton";
+      const parentContainer = this.#firstElement.container;
+      button.style.zIndex = parseInt(parentContainer.style.zIndex, 10) + 1;
+      button.tabIndex = 0;
+      button.ariaHasPopup = "dialog";
+      button.ariaControls = "commentPopup";
+      button.setAttribute("data-l10n-id", "pdfjs-show-comment-button");
+      this.#updateColor();
+      this.#updateCommentButtonPosition();
+      button.addEventListener("keydown", this.#boundKeyDown, {
+        signal
+      });
+      button.addEventListener("click", togglePopup, {
+        signal
+      });
+      button.addEventListener("pointerenter", showPopup, {
+        signal
+      });
+      button.addEventListener("pointerleave", hidePopup, {
+        signal
+      });
+      parentContainer.after(button);
     } else {
-      this._show(true);
+      this.#commentButton = this.#firstElement.container;
+      for (const element of this.trigger) {
+        element.ariaHasPopup = "dialog";
+        element.ariaControls = "commentPopup";
+        element.addEventListener("keydown", this.#boundKeyDown, {
+          signal
+        });
+        element.addEventListener("click", togglePopup, {
+          signal
+        });
+        element.addEventListener("pointerenter", showPopup, {
+          signal
+        });
+        element.addEventListener("pointerleave", hidePopup, {
+          signal
+        });
+        element.classList.add("popupTriggerArea");
+      }
     }
   }
-
-  _show(pin = false) {
-    if (pin) {
-      this.pinned = true;
+  #updateCommentButtonPosition() {
+    if (this.#firstElement.extraPopupElement && !this.#firstElement.editor) {
+      return;
     }
-
-    if (this.hideElement.hasAttribute("hidden")) {
-      this.hideElement.removeAttribute("hidden");
-      this.container.style.zIndex += 1;
+    if (!this.#commentButton) {
+      this.renderCommentButton();
+    }
+    const [x, y] = this.#commentButtonPosition;
+    const {
+      style
+    } = this.#commentButton;
+    style.left = `calc(${x}%)`;
+    style.top = `calc(${y}% - var(--comment-button-dim))`;
+  }
+  #updateColor() {
+    if (this.#firstElement.extraPopupElement) {
+      return;
+    }
+    if (!this.#commentButton) {
+      this.renderCommentButton();
+    }
+    this.#commentButton.style.backgroundColor = this.commentButtonColor || "";
+  }
+  get commentButtonColor() {
+    const {
+      color,
+      opacity
+    } = this.#firstElement.commentData;
+    return !color ? null : this.#parent._commentManager.makeCommentColor(color, opacity);
+  }
+  focusCommentButton() {
+    setTimeout(() => {
+      this.#commentButton?.focus();
+    }, 0);
+  }
+  getData() {
+    const {
+      richText,
+      color,
+      opacity,
+      creationDate,
+      modificationDate
+    } = this.#firstElement.commentData;
+    return {
+      contentsObj: {
+        str: this.comment
+      },
+      richText,
+      color,
+      opacity,
+      creationDate,
+      modificationDate
+    };
+  }
+  get elementBeforePopup() {
+    return this.#commentButton;
+  }
+  get comment() {
+    this.#commentText ||= this.#firstElement.commentText;
+    return this.#commentText;
+  }
+  set comment(text) {
+    if (text === this.comment) {
+      return;
+    }
+    this.#firstElement.commentText = this.#commentText = text;
+  }
+  focus() {
+    this.#firstElement.container?.focus();
+  }
+  get parentBoundingClientRect() {
+    return this.#firstElement.layer.getBoundingClientRect();
+  }
+  setCommentButtonStates({
+    selected,
+    hasPopup
+  }) {
+    if (!this.#commentButton) {
+      return;
+    }
+    this.#commentButton.classList.toggle("selected", selected);
+    this.#commentButton.ariaExpanded = hasPopup;
+  }
+  setSelectedCommentButton(selected) {
+    this.#commentButton.classList.toggle("selected", selected);
+  }
+  get commentPopupPosition() {
+    if (this.#popupPosition) {
+      return this.#popupPosition;
+    }
+    const {
+      x,
+      y,
+      height
+    } = this.#commentButton.getBoundingClientRect();
+    const {
+      x: parentX,
+      y: parentY,
+      width: parentWidth,
+      height: parentHeight
+    } = this.#firstElement.layer.getBoundingClientRect();
+    return [(x - parentX) / parentWidth, (y + height - parentY) / parentHeight];
+  }
+  set commentPopupPosition(pos) {
+    this.#popupPosition = pos;
+  }
+  hasDefaultPopupPosition() {
+    return this.#popupPosition === null;
+  }
+  get commentButtonPosition() {
+    return this.#commentButtonPosition;
+  }
+  get commentButtonWidth() {
+    return this.#commentButton.getBoundingClientRect().width / this.parentBoundingClientRect.width;
+  }
+  editComment(options) {
+    const [posX, posY] = this.#popupPosition || this.commentButtonPosition.map(x => x / 100);
+    const parentDimensions = this.parentBoundingClientRect;
+    const {
+      x: parentX,
+      y: parentY,
+      width: parentWidth,
+      height: parentHeight
+    } = parentDimensions;
+    this.#commentManager.showDialog(null, this, parentX + posX * parentWidth, parentY + posY * parentHeight, {
+      ...options,
+      parentDimensions
+    });
+  }
+  render() {
+    if (this.#popup) {
+      return;
+    }
+    const popup = this.#popup = document.createElement("div");
+    popup.className = "popup";
+    if (this.#color) {
+      const baseColor = popup.style.outlineColor = Util.makeHexColor(...this.#color);
+      popup.style.backgroundColor = `color-mix(in srgb, ${baseColor} 30%, white)`;
+    }
+    const header = document.createElement("span");
+    header.className = "header";
+    if (this.#titleObj?.str) {
+      const title = document.createElement("span");
+      title.className = "title";
+      header.append(title);
+      ({
+        dir: title.dir,
+        str: title.textContent
+      } = this.#titleObj);
+    }
+    popup.append(header);
+    if (this.#dateObj) {
+      const modificationDate = document.createElement("time");
+      modificationDate.className = "popupDate";
+      modificationDate.setAttribute("data-l10n-id", "pdfjs-annotation-date-time-string");
+      modificationDate.setAttribute("data-l10n-args", JSON.stringify({
+        dateObj: this.#dateObj.valueOf()
+      }));
+      modificationDate.dateTime = this.#dateObj.toISOString();
+      header.append(modificationDate);
+    }
+    renderRichText({
+      html: this.#html || this.#contentsObj.str,
+      dir: this.#contentsObj?.dir,
+      className: "popupContent"
+    }, popup);
+    this.#container.append(popup);
+  }
+  get #html() {
+    const richText = this.#richText;
+    const contentsObj = this.#contentsObj;
+    if (richText?.str && (!contentsObj?.str || contentsObj.str === richText.str)) {
+      return this.#richText.html || null;
+    }
+    return null;
+  }
+  get #fontSize() {
+    return this.#html?.attributes?.style?.fontSize || 0;
+  }
+  get #fontColor() {
+    return this.#html?.attributes?.style?.color || null;
+  }
+  #makePopupContent(text) {
+    const popupLines = [];
+    const popupContent = {
+      str: text,
+      html: {
+        name: "div",
+        attributes: {
+          dir: "auto"
+        },
+        children: [{
+          name: "p",
+          children: popupLines
+        }]
+      }
+    };
+    const lineAttributes = {
+      style: {
+        color: this.#fontColor,
+        fontSize: this.#fontSize ? `calc(${this.#fontSize}px * var(--total-scale-factor))` : ""
+      }
+    };
+    for (const line of text.split("\n")) {
+      popupLines.push({
+        name: "span",
+        value: line,
+        attributes: lineAttributes
+      });
+    }
+    return popupContent;
+  }
+  #keyDown(event) {
+    if (event.altKey || event.shiftKey || event.ctrlKey || event.metaKey) {
+      return;
+    }
+    if (event.key === "Enter" || event.key === "Escape" && this.#pinned) {
+      this.#toggle();
     }
   }
-
-  _hide(unpin = true) {
-    if (unpin) {
-      this.pinned = false;
+  updateEdited({
+    rect,
+    popup,
+    deleted
+  }) {
+    if (this.#commentManager) {
+      if (deleted) {
+        this.remove();
+        this.#commentText = null;
+      } else if (popup) {
+        if (popup.deleted) {
+          this.remove();
+        } else {
+          this.#updateColor();
+          this.#commentText = popup.text;
+        }
+      }
+      if (rect) {
+        this.#commentButtonPosition = null;
+        this.#setCommentButtonPosition();
+        this.#updateCommentButtonPosition();
+      }
+      return;
     }
-
-    if (!this.hideElement.hasAttribute("hidden") && !this.pinned) {
-      this.hideElement.setAttribute("hidden", true);
-      this.container.style.zIndex -= 1;
+    if (deleted || popup?.deleted) {
+      this.remove();
+      return;
+    }
+    this.#addEventListeners();
+    this.#updates ||= {
+      contentsObj: this.#contentsObj,
+      richText: this.#richText
+    };
+    if (rect) {
+      this.#position = null;
+    }
+    if (popup && popup.text) {
+      this.#richText = this.#makePopupContent(popup.text);
+      this.#dateObj = PDFDateString.toDateObject(popup.date);
+      this.#contentsObj = null;
+    }
+    this.#popup?.remove();
+    this.#popup = null;
+  }
+  resetEdited() {
+    if (!this.#updates) {
+      return;
+    }
+    ({
+      contentsObj: this.#contentsObj,
+      richText: this.#richText
+    } = this.#updates);
+    this.#updates = null;
+    this.#popup?.remove();
+    this.#popup = null;
+    this.#position = null;
+  }
+  remove() {
+    this.#popupAbortController?.abort();
+    this.#popupAbortController = null;
+    this.#popup?.remove();
+    this.#popup = null;
+    this.#wasVisible = false;
+    this.#pinned = false;
+    this.#commentButton?.remove();
+    this.#commentButton = null;
+    if (this.trigger) {
+      for (const element of this.trigger) {
+        element.classList.remove("popupTriggerArea");
+      }
     }
   }
-
+  #setPosition() {
+    if (this.#position !== null) {
+      return;
+    }
+    const {
+      page: {
+        view
+      },
+      viewport: {
+        rawDims: {
+          pageWidth,
+          pageHeight,
+          pageX,
+          pageY
+        }
+      }
+    } = this.#parent;
+    let useParentRect = !!this.#parentRect;
+    let rect = useParentRect ? this.#parentRect : this.#rect;
+    for (const element of this.#elements) {
+      if (!rect || Util.intersect(element.data.rect, rect) !== null) {
+        rect = element.data.rect;
+        useParentRect = true;
+        break;
+      }
+    }
+    const normalizedRect = Util.normalizeRect([rect[0], view[3] - rect[1] + view[1], rect[2], view[3] - rect[3] + view[1]]);
+    const HORIZONTAL_SPACE_AFTER_ANNOTATION = 5;
+    const parentWidth = useParentRect ? rect[2] - rect[0] + HORIZONTAL_SPACE_AFTER_ANNOTATION : 0;
+    const popupLeft = normalizedRect[0] + parentWidth;
+    const popupTop = normalizedRect[1];
+    this.#position = [100 * (popupLeft - pageX) / pageWidth, 100 * (popupTop - pageY) / pageHeight];
+    const {
+      style
+    } = this.#container;
+    style.left = `${this.#position[0]}%`;
+    style.top = `${this.#position[1]}%`;
+  }
+  #toggle() {
+    if (this.#commentManager) {
+      this.#commentManager.toggleCommentPopup(this, false);
+      return;
+    }
+    this.#pinned = !this.#pinned;
+    if (this.#pinned) {
+      this.#show();
+      this.#container.addEventListener("click", this.#boundToggle);
+      this.#container.addEventListener("keydown", this.#boundKeyDown);
+    } else {
+      this.#hide();
+      this.#container.removeEventListener("click", this.#boundToggle);
+      this.#container.removeEventListener("keydown", this.#boundKeyDown);
+    }
+  }
+  #show() {
+    if (!this.#popup) {
+      this.render();
+    }
+    if (!this.isVisible) {
+      this.#setPosition();
+      this.#container.hidden = false;
+      this.#container.style.zIndex = parseInt(this.#container.style.zIndex, 10) + 1000;
+    } else if (this.#pinned) {
+      this.#container.classList.add("focused");
+    }
+  }
+  #hide() {
+    this.#container.classList.remove("focused");
+    if (this.#pinned || !this.isVisible) {
+      return;
+    }
+    this.#container.hidden = true;
+    this.#container.style.zIndex = parseInt(this.#container.style.zIndex, 10) - 1000;
+  }
+  forceHide() {
+    this.#wasVisible = this.isVisible;
+    if (!this.#wasVisible) {
+      return;
+    }
+    this.#container.hidden = true;
+  }
+  maybeShow() {
+    if (this.#commentManager) {
+      return;
+    }
+    this.#addEventListeners();
+    if (!this.#wasVisible) {
+      return;
+    }
+    if (!this.#popup) {
+      this.#show();
+    }
+    this.#wasVisible = false;
+    this.#container.hidden = false;
+  }
+  get isVisible() {
+    return !this.#commentManager && this.#container.hidden === false;
+  }
 }
-
 class FreeTextAnnotationElement extends AnnotationElement {
   constructor(parameters) {
-    const isRenderable = !!(parameters.data.hasPopup || parameters.data.title || parameters.data.contents);
-    super(parameters, isRenderable, true);
+    super(parameters, {
+      isRenderable: true,
+      ignoreBorder: true
+    });
+    this.textContent = parameters.data.textContent;
+    this.textPosition = parameters.data.textPosition;
+    this.annotationEditorType = AnnotationEditorType.FREETEXT;
   }
-
   render() {
-    this.container.className = "freeTextAnnotation";
-
-    if (!this.data.hasPopup) {
-      this._createPopup(this.container, null, this.data);
+    this.container.classList.add("freeTextAnnotation");
+    if (this.textContent) {
+      const content = this.contentElement = document.createElement("div");
+      content.classList.add("annotationTextContent");
+      content.setAttribute("role", "comment");
+      for (const line of this.textContent) {
+        const lineSpan = document.createElement("span");
+        lineSpan.textContent = line;
+        content.append(lineSpan);
+      }
+      this.container.append(content);
     }
-
+    if (!this.data.popupRef && this.hasPopupData) {
+      this.hasOwnCommentButton = true;
+      this._createPopup();
+    }
+    this._editOnDoubleClick();
     return this.container;
   }
-
 }
-
 class LineAnnotationElement extends AnnotationElement {
+  #line = null;
   constructor(parameters) {
-    const isRenderable = !!(parameters.data.hasPopup || parameters.data.title || parameters.data.contents);
-    super(parameters, isRenderable, true);
+    super(parameters, {
+      isRenderable: true,
+      ignoreBorder: true
+    });
   }
-
   render() {
-    this.container.className = "lineAnnotation";
-    const data = this.data;
-    const width = data.rect[2] - data.rect[0];
-    const height = data.rect[3] - data.rect[1];
-    const svg = this.svgFactory.create(width, height);
-    const line = this.svgFactory.createElement("svg:line");
+    this.container.classList.add("lineAnnotation");
+    const {
+      data,
+      width,
+      height
+    } = this;
+    const svgFactory = AnnotationElement._svgFactory;
+    const svg = svgFactory.create(width, height, true);
+    const line = this.#line = svgFactory.createElement("svg:line");
     line.setAttribute("x1", data.rect[2] - data.lineCoordinates[0]);
     line.setAttribute("y1", data.rect[3] - data.lineCoordinates[1]);
     line.setAttribute("x2", data.rect[2] - data.lineCoordinates[2]);
     line.setAttribute("y2", data.rect[3] - data.lineCoordinates[3]);
     line.setAttribute("stroke-width", data.borderStyle.width || 1);
     line.setAttribute("stroke", "transparent");
-    svg.appendChild(line);
+    line.setAttribute("fill", "transparent");
+    svg.append(line);
     this.container.append(svg);
-
-    this._createPopup(this.container, line, data);
-
+    if (!data.popupRef && this.hasPopupData) {
+      this.hasOwnCommentButton = true;
+      this._createPopup();
+    }
     return this.container;
   }
-
-}
-
-class SquareAnnotationElement extends AnnotationElement {
-  constructor(parameters) {
-    const isRenderable = !!(parameters.data.hasPopup || parameters.data.title || parameters.data.contents);
-    super(parameters, isRenderable, true);
+  getElementsToTriggerPopup() {
+    return this.#line;
   }
-
+  addHighlightArea() {
+    this.container.classList.add("highlightArea");
+  }
+}
+class SquareAnnotationElement extends AnnotationElement {
+  #square = null;
+  constructor(parameters) {
+    super(parameters, {
+      isRenderable: true,
+      ignoreBorder: true
+    });
+  }
   render() {
-    this.container.className = "squareAnnotation";
-    const data = this.data;
-    const width = data.rect[2] - data.rect[0];
-    const height = data.rect[3] - data.rect[1];
-    const svg = this.svgFactory.create(width, height);
+    this.container.classList.add("squareAnnotation");
+    const {
+      data,
+      width,
+      height
+    } = this;
+    const svgFactory = AnnotationElement._svgFactory;
+    const svg = svgFactory.create(width, height, true);
     const borderWidth = data.borderStyle.width;
-    const square = this.svgFactory.createElement("svg:rect");
+    const square = this.#square = svgFactory.createElement("svg:rect");
     square.setAttribute("x", borderWidth / 2);
     square.setAttribute("y", borderWidth / 2);
     square.setAttribute("width", width - borderWidth);
     square.setAttribute("height", height - borderWidth);
     square.setAttribute("stroke-width", borderWidth || 1);
     square.setAttribute("stroke", "transparent");
-    square.setAttribute("fill", "none");
-    svg.appendChild(square);
+    square.setAttribute("fill", "transparent");
+    svg.append(square);
     this.container.append(svg);
-
-    this._createPopup(this.container, square, data);
-
+    if (!data.popupRef && this.hasPopupData) {
+      this.hasOwnCommentButton = true;
+      this._createPopup();
+    }
     return this.container;
   }
-
-}
-
-class CircleAnnotationElement extends AnnotationElement {
-  constructor(parameters) {
-    const isRenderable = !!(parameters.data.hasPopup || parameters.data.title || parameters.data.contents);
-    super(parameters, isRenderable, true);
+  getElementsToTriggerPopup() {
+    return this.#square;
   }
-
+  addHighlightArea() {
+    this.container.classList.add("highlightArea");
+  }
+}
+class CircleAnnotationElement extends AnnotationElement {
+  #circle = null;
+  constructor(parameters) {
+    super(parameters, {
+      isRenderable: true,
+      ignoreBorder: true
+    });
+  }
   render() {
-    this.container.className = "circleAnnotation";
-    const data = this.data;
-    const width = data.rect[2] - data.rect[0];
-    const height = data.rect[3] - data.rect[1];
-    const svg = this.svgFactory.create(width, height);
+    this.container.classList.add("circleAnnotation");
+    const {
+      data,
+      width,
+      height
+    } = this;
+    const svgFactory = AnnotationElement._svgFactory;
+    const svg = svgFactory.create(width, height, true);
     const borderWidth = data.borderStyle.width;
-    const circle = this.svgFactory.createElement("svg:ellipse");
+    const circle = this.#circle = svgFactory.createElement("svg:ellipse");
     circle.setAttribute("cx", width / 2);
     circle.setAttribute("cy", height / 2);
     circle.setAttribute("rx", width / 2 - borderWidth / 2);
     circle.setAttribute("ry", height / 2 - borderWidth / 2);
     circle.setAttribute("stroke-width", borderWidth || 1);
     circle.setAttribute("stroke", "transparent");
-    circle.setAttribute("fill", "none");
-    svg.appendChild(circle);
+    circle.setAttribute("fill", "transparent");
+    svg.append(circle);
     this.container.append(svg);
-
-    this._createPopup(this.container, circle, data);
-
+    if (!data.popupRef && this.hasPopupData) {
+      this.hasOwnCommentButton = true;
+      this._createPopup();
+    }
     return this.container;
   }
-
+  getElementsToTriggerPopup() {
+    return this.#circle;
+  }
+  addHighlightArea() {
+    this.container.classList.add("highlightArea");
+  }
 }
-
 class PolylineAnnotationElement extends AnnotationElement {
+  #polyline = null;
   constructor(parameters) {
-    const isRenderable = !!(parameters.data.hasPopup || parameters.data.title || parameters.data.contents);
-    super(parameters, isRenderable, true);
+    super(parameters, {
+      isRenderable: true,
+      ignoreBorder: true
+    });
     this.containerClassName = "polylineAnnotation";
     this.svgElementName = "svg:polyline";
   }
-
   render() {
-    this.container.className = this.containerClassName;
-    const data = this.data;
-    const width = data.rect[2] - data.rect[0];
-    const height = data.rect[3] - data.rect[1];
-    const svg = this.svgFactory.create(width, height);
-    let points = [];
-
-    for (const coordinate of data.vertices) {
-      const x = coordinate.x - data.rect[0];
-      const y = data.rect[3] - coordinate.y;
-      points.push(x + "," + y);
+    this.container.classList.add(this.containerClassName);
+    const {
+      data: {
+        rect,
+        vertices,
+        borderStyle,
+        popupRef
+      },
+      width,
+      height
+    } = this;
+    if (!vertices) {
+      return this.container;
     }
-
+    const svgFactory = AnnotationElement._svgFactory;
+    const svg = svgFactory.create(width, height, true);
+    let points = [];
+    for (let i = 0, ii = vertices.length; i < ii; i += 2) {
+      const x = vertices[i] - rect[0];
+      const y = rect[3] - vertices[i + 1];
+      points.push(`${x},${y}`);
+    }
     points = points.join(" ");
-    const polyline = this.svgFactory.createElement(this.svgElementName);
+    const polyline = this.#polyline = svgFactory.createElement(this.svgElementName);
     polyline.setAttribute("points", points);
-    polyline.setAttribute("stroke-width", data.borderStyle.width || 1);
+    polyline.setAttribute("stroke-width", borderStyle.width || 1);
     polyline.setAttribute("stroke", "transparent");
-    polyline.setAttribute("fill", "none");
-    svg.appendChild(polyline);
+    polyline.setAttribute("fill", "transparent");
+    svg.append(polyline);
     this.container.append(svg);
-
-    this._createPopup(this.container, polyline, data);
-
+    if (!popupRef && this.hasPopupData) {
+      this.hasOwnCommentButton = true;
+      this._createPopup();
+    }
     return this.container;
   }
-
+  getElementsToTriggerPopup() {
+    return this.#polyline;
+  }
+  addHighlightArea() {
+    this.container.classList.add("highlightArea");
+  }
 }
-
 class PolygonAnnotationElement extends PolylineAnnotationElement {
   constructor(parameters) {
     super(parameters);
     this.containerClassName = "polygonAnnotation";
     this.svgElementName = "svg:polygon";
   }
-
 }
-
 class CaretAnnotationElement extends AnnotationElement {
   constructor(parameters) {
-    const isRenderable = !!(parameters.data.hasPopup || parameters.data.title || parameters.data.contents);
-    super(parameters, isRenderable, true);
+    super(parameters, {
+      isRenderable: true,
+      ignoreBorder: true
+    });
   }
-
   render() {
-    this.container.className = "caretAnnotation";
-
-    if (!this.data.hasPopup) {
-      this._createPopup(this.container, null, this.data);
+    this.container.classList.add("caretAnnotation");
+    if (!this.data.popupRef && this.hasPopupData) {
+      this.hasOwnCommentButton = true;
+      this._createPopup();
     }
-
     return this.container;
   }
-
 }
-
 class InkAnnotationElement extends AnnotationElement {
+  #polylinesGroupElement = null;
+  #polylines = [];
   constructor(parameters) {
-    const isRenderable = !!(parameters.data.hasPopup || parameters.data.title || parameters.data.contents);
-    super(parameters, isRenderable, true);
+    super(parameters, {
+      isRenderable: true,
+      ignoreBorder: true
+    });
     this.containerClassName = "inkAnnotation";
     this.svgElementName = "svg:polyline";
+    this.annotationEditorType = this.data.it === "InkHighlight" ? AnnotationEditorType.HIGHLIGHT : AnnotationEditorType.INK;
   }
-
-  render() {
-    this.container.className = this.containerClassName;
-    const data = this.data;
-    const width = data.rect[2] - data.rect[0];
-    const height = data.rect[3] - data.rect[1];
-    const svg = this.svgFactory.create(width, height);
-
-    for (const inkList of data.inkLists) {
-      let points = [];
-
-      for (const coordinate of inkList) {
-        const x = coordinate.x - data.rect[0];
-        const y = data.rect[3] - coordinate.y;
-        points.push(`${x},${y}`);
-      }
-
-      points = points.join(" ");
-      const polyline = this.svgFactory.createElement(this.svgElementName);
-      polyline.setAttribute("points", points);
-      polyline.setAttribute("stroke-width", data.borderStyle.width || 1);
-      polyline.setAttribute("stroke", "transparent");
-      polyline.setAttribute("fill", "none");
-
-      this._createPopup(this.container, polyline, data);
-
-      svg.appendChild(polyline);
+  #getTransform(rotation, rect) {
+    switch (rotation) {
+      case 90:
+        return {
+          transform: `rotate(90) translate(${-rect[0]},${rect[1]}) scale(1,-1)`,
+          width: rect[3] - rect[1],
+          height: rect[2] - rect[0]
+        };
+      case 180:
+        return {
+          transform: `rotate(180) translate(${-rect[2]},${rect[1]}) scale(1,-1)`,
+          width: rect[2] - rect[0],
+          height: rect[3] - rect[1]
+        };
+      case 270:
+        return {
+          transform: `rotate(270) translate(${-rect[2]},${rect[3]}) scale(1,-1)`,
+          width: rect[3] - rect[1],
+          height: rect[2] - rect[0]
+        };
+      default:
+        return {
+          transform: `translate(${-rect[0]},${rect[3]}) scale(1,-1)`,
+          width: rect[2] - rect[0],
+          height: rect[3] - rect[1]
+        };
     }
-
+  }
+  render() {
+    this.container.classList.add(this.containerClassName);
+    const {
+      data: {
+        rect,
+        rotation,
+        inkLists,
+        borderStyle,
+        popupRef
+      }
+    } = this;
+    const {
+      transform,
+      width,
+      height
+    } = this.#getTransform(rotation, rect);
+    const svgFactory = AnnotationElement._svgFactory;
+    const svg = svgFactory.create(width, height, true);
+    const g = this.#polylinesGroupElement = svgFactory.createElement("svg:g");
+    svg.append(g);
+    g.setAttribute("stroke-width", borderStyle.width || 1);
+    g.setAttribute("stroke-linecap", "round");
+    g.setAttribute("stroke-linejoin", "round");
+    g.setAttribute("stroke-miterlimit", 10);
+    g.setAttribute("stroke", "transparent");
+    g.setAttribute("fill", "transparent");
+    g.setAttribute("transform", transform);
+    for (const inkList of inkLists) {
+      const polyline = svgFactory.createElement(this.svgElementName);
+      this.#polylines.push(polyline);
+      polyline.setAttribute("points", inkList.join(","));
+      g.append(polyline);
+    }
+    if (!popupRef && this.hasPopupData) {
+      this.hasOwnCommentButton = true;
+      this._createPopup();
+    }
     this.container.append(svg);
+    this._editOnDoubleClick();
     return this.container;
   }
-
+  updateEdited(params) {
+    super.updateEdited(params);
+    const {
+      thickness,
+      points,
+      rect
+    } = params;
+    const g = this.#polylinesGroupElement;
+    if (thickness >= 0) {
+      g.setAttribute("stroke-width", thickness || 1);
+    }
+    if (points) {
+      for (let i = 0, ii = this.#polylines.length; i < ii; i++) {
+        this.#polylines[i].setAttribute("points", points[i].join(","));
+      }
+    }
+    if (rect) {
+      const {
+        transform,
+        width,
+        height
+      } = this.#getTransform(this.data.rotation, rect);
+      const root = g.parentElement;
+      root.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      g.setAttribute("transform", transform);
+    }
+  }
+  getElementsToTriggerPopup() {
+    return this.#polylines;
+  }
+  addHighlightArea() {
+    this.container.classList.add("highlightArea");
+  }
 }
-
 class HighlightAnnotationElement extends AnnotationElement {
   constructor(parameters) {
-    const isRenderable = !!(parameters.data.hasPopup || parameters.data.title || parameters.data.contents);
-    super(parameters, isRenderable, true);
+    super(parameters, {
+      isRenderable: true,
+      ignoreBorder: true,
+      createQuadrilaterals: true
+    });
+    this.annotationEditorType = AnnotationEditorType.HIGHLIGHT;
   }
-
   render() {
-    this.container.className = "highlightAnnotation";
-
-    if (!this.data.hasPopup) {
-      this._createPopup(this.container, null, this.data);
+    const {
+      data: {
+        overlaidText,
+        popupRef
+      }
+    } = this;
+    if (!popupRef && this.hasPopupData) {
+      this.hasOwnCommentButton = true;
+      this._createPopup();
     }
-
+    this.container.classList.add("highlightAnnotation");
+    this._editOnDoubleClick();
+    if (overlaidText) {
+      const mark = document.createElement("mark");
+      mark.classList.add("overlaidText");
+      mark.textContent = overlaidText;
+      this.container.append(mark);
+    }
     return this.container;
   }
-
 }
-
 class UnderlineAnnotationElement extends AnnotationElement {
   constructor(parameters) {
-    const isRenderable = !!(parameters.data.hasPopup || parameters.data.title || parameters.data.contents);
-    super(parameters, isRenderable, true);
+    super(parameters, {
+      isRenderable: true,
+      ignoreBorder: true,
+      createQuadrilaterals: true
+    });
   }
-
   render() {
-    this.container.className = "underlineAnnotation";
-
-    if (!this.data.hasPopup) {
-      this._createPopup(this.container, null, this.data);
+    const {
+      data: {
+        overlaidText,
+        popupRef
+      }
+    } = this;
+    if (!popupRef && this.hasPopupData) {
+      this.hasOwnCommentButton = true;
+      this._createPopup();
     }
-
+    this.container.classList.add("underlineAnnotation");
+    if (overlaidText) {
+      const underline = document.createElement("u");
+      underline.classList.add("overlaidText");
+      underline.textContent = overlaidText;
+      this.container.append(underline);
+    }
     return this.container;
   }
-
 }
-
 class SquigglyAnnotationElement extends AnnotationElement {
   constructor(parameters) {
-    const isRenderable = !!(parameters.data.hasPopup || parameters.data.title || parameters.data.contents);
-    super(parameters, isRenderable, true);
+    super(parameters, {
+      isRenderable: true,
+      ignoreBorder: true,
+      createQuadrilaterals: true
+    });
   }
-
   render() {
-    this.container.className = "squigglyAnnotation";
-
-    if (!this.data.hasPopup) {
-      this._createPopup(this.container, null, this.data);
+    const {
+      data: {
+        overlaidText,
+        popupRef
+      }
+    } = this;
+    if (!popupRef && this.hasPopupData) {
+      this.hasOwnCommentButton = true;
+      this._createPopup();
     }
-
+    this.container.classList.add("squigglyAnnotation");
+    if (overlaidText) {
+      const underline = document.createElement("u");
+      underline.classList.add("overlaidText");
+      underline.textContent = overlaidText;
+      this.container.append(underline);
+    }
     return this.container;
   }
-
 }
-
 class StrikeOutAnnotationElement extends AnnotationElement {
   constructor(parameters) {
-    const isRenderable = !!(parameters.data.hasPopup || parameters.data.title || parameters.data.contents);
-    super(parameters, isRenderable, true);
+    super(parameters, {
+      isRenderable: true,
+      ignoreBorder: true,
+      createQuadrilaterals: true
+    });
   }
-
   render() {
-    this.container.className = "strikeoutAnnotation";
-
-    if (!this.data.hasPopup) {
-      this._createPopup(this.container, null, this.data);
+    const {
+      data: {
+        overlaidText,
+        popupRef
+      }
+    } = this;
+    if (!popupRef && this.hasPopupData) {
+      this.hasOwnCommentButton = true;
+      this._createPopup();
     }
-
+    this.container.classList.add("strikeoutAnnotation");
+    if (overlaidText) {
+      const strikeout = document.createElement("s");
+      strikeout.classList.add("overlaidText");
+      strikeout.textContent = overlaidText;
+      this.container.append(strikeout);
+    }
     return this.container;
   }
-
 }
-
 class StampAnnotationElement extends AnnotationElement {
   constructor(parameters) {
-    const isRenderable = !!(parameters.data.hasPopup || parameters.data.title || parameters.data.contents);
-    super(parameters, isRenderable, true);
+    super(parameters, {
+      isRenderable: true,
+      ignoreBorder: true
+    });
+    this.annotationEditorType = AnnotationEditorType.STAMP;
   }
-
   render() {
-    this.container.className = "stampAnnotation";
-
-    if (!this.data.hasPopup) {
-      this._createPopup(this.container, null, this.data);
+    this.container.classList.add("stampAnnotation");
+    this.container.setAttribute("role", "img");
+    if (!this.data.popupRef && this.hasPopupData) {
+      this.hasOwnCommentButton = true;
+      this._createPopup();
     }
-
+    this._editOnDoubleClick();
     return this.container;
   }
-
 }
-
 class FileAttachmentAnnotationElement extends AnnotationElement {
+  #trigger = null;
   constructor(parameters) {
-    super(parameters, true);
+    super(parameters, {
+      isRenderable: true
+    });
     const {
+      fileId,
+      file
+    } = this.data;
+    this.filename = file.filename;
+    this.content = file.content;
+    this.fileId = fileId;
+    this.linkService.eventBus?.dispatch("fileattachmentannotation", {
+      source: this,
+      attachmentId: this.fileId,
+      ...file
+    });
+  }
+  render() {
+    this.container.classList.add("fileAttachmentAnnotation");
+    const {
+      container,
+      data
+    } = this;
+    let trigger;
+    if (data.hasAppearance || data.fillAlpha === 0) {
+      trigger = document.createElement("div");
+    } else {
+      trigger = document.createElement("img");
+      trigger.src = `${this.imageResourcesPath}annotation-${/paperclip/i.test(data.name) ? "paperclip" : "pushpin"}.svg`;
+      if (data.fillAlpha && data.fillAlpha < 1) {
+        trigger.style = `filter: opacity(${Math.round(data.fillAlpha * 100)}%);`;
+      }
+    }
+    trigger.addEventListener("dblclick", this.#download.bind(this));
+    this.#trigger = trigger;
+    const {
+      isMac
+    } = FeatureTest.platform;
+    container.addEventListener("keydown", evt => {
+      if (evt.key === "Enter" && (isMac ? evt.metaKey : evt.ctrlKey)) {
+        this.#download();
+      }
+    });
+    if (!data.popupRef && this.hasPopupData) {
+      this.hasOwnCommentButton = true;
+      this._createPopup();
+    } else {
+      trigger.classList.add("popupTriggerArea");
+    }
+    container.append(trigger);
+    return container;
+  }
+  getElementsToTriggerPopup() {
+    return this.#trigger;
+  }
+  addHighlightArea() {
+    this.container.classList.add("highlightArea");
+  }
+  async #download() {
+    const {
+      fileId,
       filename,
-      content
-    } = this.data.file;
-    this.filename = (0, _display_utils.getFilenameFromUrl)(filename);
-    this.content = content;
-
-    if (this.linkService.eventBus) {
-      this.linkService.eventBus.dispatch("fileattachmentannotation", {
-        source: this,
-        id: (0, _util.stringToPDFString)(filename),
-        filename,
-        content
-      });
+      content: fallbackContent
+    } = this;
+    const content = (await this.linkService.getAttachmentContent(fileId)) || fallbackContent;
+    if (content) {
+      this.downloadManager?.openOrDownloadData(content, filename);
     }
   }
-
+}
+class MediaAnnotationElement extends AnnotationElement {
+  #abortController = new AbortController();
+  #contentUrl = null;
+  #media = null;
+  constructor(parameters) {
+    super(parameters, {
+      isRenderable: !!parameters.data.richMedia
+    });
+  }
   render() {
-    this.container.className = "fileAttachmentAnnotation";
-    const trigger = document.createElement("div");
-    trigger.style.height = this.container.style.height;
-    trigger.style.width = this.container.style.width;
-    trigger.addEventListener("dblclick", this._download.bind(this));
-
-    if (!this.data.hasPopup && (this.data.title || this.data.contents)) {
-      this._createPopup(this.container, trigger, this.data);
-    }
-
-    this.container.appendChild(trigger);
+    this.container.classList.add("mediaAnnotation");
+    const {
+      filename
+    } = this.data.richMedia;
+    const button = document.createElement("button");
+    button.className = "mediaPlayButton";
+    button.type = "button";
+    button.title = button.ariaLabel = filename;
+    button.addEventListener("click", () => this.#load(button), {
+      signal: this.#abortController.signal
+    });
+    this.container.append(button);
     return this.container;
   }
-
-  _download() {
-    if (!this.downloadManager) {
-      (0, _util.warn)("Download cannot be started due to unavailable download manager");
+  async #load(button) {
+    const {
+      fileId,
+      filename,
+      contentType
+    } = this.data.richMedia;
+    button.disabled = true;
+    let content;
+    try {
+      content = await this.linkService.getAttachmentContent(fileId);
+    } catch {
+      return;
+    } finally {
+      button.disabled = false;
+    }
+    if (!content || !button.isConnected) {
       return;
     }
-
-    this.downloadManager.downloadData(this.content, this.filename, "");
-  }
-
-}
-
-class AnnotationLayer {
-  static render(parameters) {
-    const sortedAnnotations = [],
-          popupAnnotations = [];
-
-    for (const data of parameters.annotations) {
-      if (!data) {
-        continue;
-      }
-
-      if (data.annotationType === _util.AnnotationType.POPUP) {
-        popupAnnotations.push(data);
-        continue;
-      }
-
-      sortedAnnotations.push(data);
+    const {
+      signal
+    } = this.#abortController;
+    const blob = new Blob([content], {
+      type: contentType
+    });
+    if (!/^(?:video|audio)\//.test(blob.type)) {
+      return;
     }
-
-    if (popupAnnotations.length) {
-      sortedAnnotations.push(...popupAnnotations);
-    }
-
-    for (const data of sortedAnnotations) {
-      const element = AnnotationElementFactory.create({
-        data,
-        layer: parameters.div,
-        page: parameters.page,
-        viewport: parameters.viewport,
-        linkService: parameters.linkService,
-        downloadManager: parameters.downloadManager,
-        imageResourcesPath: parameters.imageResourcesPath || "",
-        renderInteractiveForms: parameters.renderInteractiveForms || false,
-        svgFactory: new _display_utils.DOMSVGFactory()
+    const url = URL.createObjectURL(blob);
+    this.#contentUrl = url;
+    const isAudio = blob.type.startsWith("audio/");
+    const media = document.createElement(isAudio ? "audio" : "video");
+    this.#media = media;
+    media.className = "mediaContent";
+    this._setBackgroundColor(media);
+    media.src = url;
+    media.title = filename;
+    media.controls = true;
+    media.autoplay = true;
+    media.tabIndex = 0;
+    if (isAudio) {
+      let hovered = false;
+      let focused = false;
+      const updateControls = () => {
+        media.controls = hovered || focused;
+      };
+      this.container.addEventListener("pointerenter", () => {
+        hovered = true;
+        updateControls();
+      }, {
+        signal
       });
-
-      if (element.isRenderable) {
-        parameters.div.appendChild(element.render());
-      }
+      this.container.addEventListener("pointerleave", () => {
+        hovered = false;
+        updateControls();
+      }, {
+        signal
+      });
+      this.container.addEventListener("focusin", () => {
+        focused = true;
+        updateControls();
+      }, {
+        signal
+      });
+      this.container.addEventListener("focusout", () => {
+        focused = false;
+        updateControls();
+      }, {
+        signal
+      });
+    }
+    media.addEventListener("emptied", () => this.#revokeContentUrl(url), {
+      once: true,
+      signal
+    });
+    button.replaceWith(media);
+    media.play().catch(() => {});
+  }
+  #revokeContentUrl(url = this.#contentUrl) {
+    if (url && url === this.#contentUrl) {
+      URL.revokeObjectURL(url);
+      this.#contentUrl = null;
     }
   }
-
-  static update(parameters) {
-    for (const data of parameters.annotations) {
-      const element = parameters.div.querySelector(`[data-annotation-id="${data.id}"]`);
-
-      if (element) {
-        element.style.transform = `matrix(${parameters.viewport.transform.join(",")})`;
-      }
+  destroy() {
+    this.#abortController.abort();
+    if (this.#media) {
+      this.#media.pause();
+      this.#media.removeAttribute("src");
+      this.#media.load();
+      this.#media = null;
     }
-
-    parameters.div.removeAttribute("hidden");
+    this.#revokeContentUrl();
   }
-
 }
-
-exports.AnnotationLayer = AnnotationLayer;
+class AnnotationLayer {
+  #accessibilityManager = null;
+  #annotationCanvasMap = null;
+  #annotationStorage = null;
+  #editableAnnotations = new Map();
+  #structTreeLayer = null;
+  #linkService = null;
+  #elements = [];
+  #hasAriaAttributesFromStructTree = false;
+  zIndex = 0;
+  constructor({
+    div,
+    accessibilityManager,
+    annotationCanvasMap,
+    annotationEditorUIManager,
+    page,
+    viewport,
+    structTreeLayer,
+    commentManager,
+    linkService,
+    annotationStorage
+  }) {
+    this.div = div;
+    this.#accessibilityManager = accessibilityManager;
+    this.#annotationCanvasMap = annotationCanvasMap;
+    this.#structTreeLayer = structTreeLayer || null;
+    this.#linkService = linkService || null;
+    this.#annotationStorage = annotationStorage || new AnnotationStorage();
+    this.page = page;
+    this.viewport = viewport;
+    this._annotationEditorUIManager = annotationEditorUIManager;
+    this._commentManager = commentManager || null;
+  }
+  hasEditableAnnotations() {
+    return this.#editableAnnotations.size > 0;
+  }
+  async render(params) {
+    const {
+      annotations,
+      optionalContentConfig
+    } = params;
+    const layer = this.div;
+    setLayerDimensions(layer, this.viewport);
+    const popupToElements = new Map();
+    const popupAnnotations = [];
+    const elementParams = {
+      data: null,
+      layer,
+      linkService: this.#linkService,
+      downloadManager: params.downloadManager,
+      imageResourcesPath: params.imageResourcesPath || "",
+      renderForms: params.renderForms !== false,
+      annotationStorage: this.#annotationStorage,
+      enableComment: params.enableComment === true,
+      enableAnnotationEditing: params.enableAnnotationEditing !== false,
+      enableScripting: params.enableScripting === true,
+      hasJSActions: params.hasJSActions,
+      fieldObjects: params.fieldObjects,
+      parent: this,
+      elements: null
+    };
+    for (const data of annotations) {
+      if (data.noHTML) {
+        continue;
+      }
+      const isPopupAnnotation = data.annotationType === AnnotationType.POPUP;
+      if (!isPopupAnnotation) {
+        if (data.rect[2] === data.rect[0] || data.rect[3] === data.rect[1]) {
+          continue;
+        }
+      } else {
+        const elements = popupToElements.get(data.id);
+        if (!elements) {
+          continue;
+        }
+        if (!this._commentManager) {
+          popupAnnotations.push(data);
+          continue;
+        }
+        elementParams.elements = elements;
+      }
+      elementParams.data = data;
+      const element = AnnotationElementFactory.create(elementParams);
+      if (!element.isRenderable) {
+        continue;
+      }
+      if (!isPopupAnnotation) {
+        this.#elements.push(element);
+        if (data.popupRef) {
+          popupToElements.getOrInsertComputed(data.popupRef, makeArr).push(element);
+        }
+      }
+      const rendered = element.render();
+      if (data.hidden) {
+        rendered.style.visibility = "hidden";
+      }
+      element.updateOC(optionalContentConfig);
+      if (element._isEditable) {
+        this.#editableAnnotations.set(element.data.id, element);
+        this._annotationEditorUIManager?.renderAnnotationElement(element);
+      }
+    }
+    await this.#addElementsToDOM();
+    for (const data of popupAnnotations) {
+      const elements = elementParams.elements = popupToElements.get(data.id);
+      elementParams.data = data;
+      const element = AnnotationElementFactory.create(elementParams);
+      if (!element.isRenderable) {
+        continue;
+      }
+      const rendered = element.render();
+      element.contentElement.id = `${AnnotationPrefix}${data.id}`;
+      if (data.hidden) {
+        rendered.style.visibility = "hidden";
+      }
+      elements.at(-1).container.after(rendered);
+    }
+    this.#setAnnotationCanvasMap();
+  }
+  async #addElementsToDOM() {
+    if (this.#elements.length === 0) {
+      return;
+    }
+    this.div.replaceChildren();
+    const promises = [];
+    if (!this.#hasAriaAttributesFromStructTree) {
+      this.#hasAriaAttributesFromStructTree = true;
+      for (const {
+        contentElement,
+        data: {
+          hidden,
+          id,
+          oc
+        }
+      } of this.#elements) {
+        const annotationId = contentElement.id = `${AnnotationPrefix}${id}`;
+        const enableLinkOwnership = contentElement.localName === "a" && !hidden && !oc;
+        promises.push(this.#structTreeLayer?.getAriaAttributes(annotationId, {
+          enableLinkOwnership
+        }).then(ariaAttributes => {
+          if (ariaAttributes) {
+            for (const [key, value] of ariaAttributes) {
+              contentElement.setAttribute(key, value);
+            }
+          }
+        }));
+      }
+    }
+    this.#elements.sort(({
+      data: {
+        rect: [a0, a1, a2, a3]
+      }
+    }, {
+      data: {
+        rect: [b0, b1, b2, b3]
+      }
+    }) => {
+      if (a0 === a2 && a1 === a3) {
+        return +1;
+      }
+      if (b0 === b2 && b1 === b3) {
+        return -1;
+      }
+      const top1 = a3;
+      const bot1 = a1;
+      const mid1 = (a1 + a3) / 2;
+      const top2 = b3;
+      const bot2 = b1;
+      const mid2 = (b1 + b3) / 2;
+      if (mid1 >= top2 && mid2 <= bot1) {
+        return -1;
+      }
+      if (mid2 >= top1 && mid1 <= bot2) {
+        return +1;
+      }
+      const centerX1 = (a0 + a2) / 2;
+      const centerX2 = (b0 + b2) / 2;
+      return centerX1 - centerX2;
+    });
+    const fragment = document.createDocumentFragment();
+    for (const element of this.#elements) {
+      fragment.append(element.container);
+      if (this._commentManager) {
+        (element.extraPopupElement?.popup || element.popup)?.renderCommentButton();
+      } else if (element.extraPopupElement) {
+        fragment.append(element.extraPopupElement.render());
+      }
+    }
+    this.div.append(fragment);
+    await Promise.all(promises);
+    if (this.#accessibilityManager) {
+      const annotationIds = await this.#structTreeLayer?.getAnnotationIds();
+      for (const {
+        contentElement
+      } of this.#elements) {
+        if (annotationIds?.has(contentElement.id)) {
+          continue;
+        }
+        this.#accessibilityManager.addPointerInTextLayer(contentElement, false);
+      }
+    }
+  }
+  async addLinkAnnotations(annotations) {
+    const elementParams = {
+      data: null,
+      layer: this.div,
+      linkService: this.#linkService,
+      parent: this
+    };
+    for (const data of annotations) {
+      data.borderStyle ||= AnnotationLayer._defaultBorderStyle;
+      elementParams.data = data;
+      const element = AnnotationElementFactory.create(elementParams);
+      if (!element.isRenderable) {
+        continue;
+      }
+      element.render();
+      element.contentElement.id = `${AnnotationPrefix}${data.id}`;
+      this.#elements.push(element);
+    }
+    await this.#addElementsToDOM();
+  }
+  update({
+    viewport,
+    optionalContentConfig
+  }) {
+    const layer = this.div;
+    this.viewport = viewport;
+    setLayerDimensions(layer, {
+      rotation: viewport.rotation
+    });
+    for (const element of this.#elements) {
+      element.updateOC(optionalContentConfig);
+    }
+    this.#setAnnotationCanvasMap();
+    layer.hidden = false;
+  }
+  destroy() {
+    for (const element of this.#elements) {
+      element.destroy?.();
+      this.#accessibilityManager?.removePointerInTextLayer(element.contentElement);
+    }
+    this.#elements.length = 0;
+    this.#editableAnnotations.clear();
+    this.div.replaceChildren();
+  }
+  #setAnnotationCanvasMap() {
+    if (!this.#annotationCanvasMap) {
+      return;
+    }
+    const layer = this.div;
+    for (const [id, canvas] of this.#annotationCanvasMap) {
+      const element = layer.querySelector(`[data-annotation-id="${id}"]`);
+      if (!element) {
+        continue;
+      }
+      if (Array.isArray(canvas)) {
+        for (const cvs of canvas) {
+          cvs.className = "annotationContent";
+          cvs.ariaHidden = true;
+        }
+      } else {
+        canvas.className = "annotationContent";
+        canvas.ariaHidden = true;
+      }
+      const toRemove = [];
+      for (const child of element.children) {
+        if (child.nodeName === "CANVAS") {
+          toRemove.push(child);
+        }
+      }
+      for (const child of toRemove) {
+        child.remove();
+      }
+      const firstCanvas = Array.isArray(canvas) ? canvas[0] : canvas;
+      const {
+        firstChild
+      } = element;
+      if (!firstChild) {
+        element.append(firstCanvas);
+      } else if (!firstChild.classList.contains("annotationContent")) {
+        firstChild.before(firstCanvas);
+      } else {
+        firstChild.after(firstCanvas);
+      }
+      if (Array.isArray(canvas)) {
+        let lastCanvas = firstCanvas;
+        for (let i = 1, ii = canvas.length; i < ii; i++) {
+          lastCanvas.after(canvas[i]);
+          lastCanvas = canvas[i];
+        }
+      }
+      this.#annotationCanvasMap.delete(id);
+      const editableAnnotation = this.#editableAnnotations.get(id);
+      if (!editableAnnotation) {
+        continue;
+      }
+      if (editableAnnotation._hasNoCanvas) {
+        this._annotationEditorUIManager?.setMissingCanvas(id, element.id, canvas);
+        editableAnnotation._hasNoCanvas = false;
+      } else {
+        editableAnnotation.canvas = canvas;
+      }
+    }
+  }
+  refreshCanvases() {
+    this.#setAnnotationCanvasMap();
+  }
+  getEditableAnnotations() {
+    return this.#editableAnnotations.values();
+  }
+  getEditableAnnotation(id) {
+    return this.#editableAnnotations.get(id);
+  }
+  addFakeAnnotation(editor) {
+    const {
+      div
+    } = this;
+    const {
+      id,
+      rotation
+    } = editor;
+    const element = new EditorAnnotationElement({
+      data: {
+        id,
+        rect: editor.getPDFRect(),
+        rotation
+      },
+      editor,
+      layer: div,
+      parent: this,
+      enableComment: !!this._commentManager,
+      linkService: this.#linkService,
+      annotationStorage: this.#annotationStorage
+    });
+    element.render();
+    element.contentElement.id = `${AnnotationPrefix}${id}`;
+    element.createOrUpdatePopup();
+    this.#elements.push(element);
+    return element;
+  }
+  removeAnnotation(id) {
+    const index = this.#elements.findIndex(el => el.data.id === id);
+    if (index < 0) {
+      return;
+    }
+    const [element] = this.#elements.splice(index, 1);
+    this.#accessibilityManager?.removePointerInTextLayer(element.contentElement);
+  }
+  updateFakeAnnotations(editors) {
+    if (editors.length === 0) {
+      return;
+    }
+    for (const editor of editors) {
+      editor.updateFakeAnnotationElement(this);
+    }
+    this.#addElementsToDOM();
+  }
+  togglePointerEvents(enabled = false) {
+    this.div.classList.toggle("disabled", !enabled);
+  }
+  static get _defaultBorderStyle() {
+    return shadow(this, "_defaultBorderStyle", Object.freeze({
+      width: 1,
+      rawWidth: 1,
+      style: AnnotationBorderStyleType.SOLID,
+      dashArray: [3],
+      horizontalCornerRadius: 0,
+      verticalCornerRadius: 0
+    }));
+  }
+}
+export { AnnotationLayer, FreeTextAnnotationElement, HighlightAnnotationElement, InkAnnotationElement, StampAnnotationElement };

@@ -1,0 +1,121 @@
+/* Copyright 2024 Mozilla Foundation
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+import "core-js/modules/es.iterator.constructor.js";
+import "core-js/modules/es.iterator.for-each.js";
+import "core-js/modules/es.map.get-or-insert.js";
+import "core-js/modules/es.map.get-or-insert-computed.js";
+import { CFFCompiler, CFFParser } from "./cff_parser.js";
+import { SEAC_ANALYSIS_ENABLED, type1FontGlyphMapping } from "./fonts_utils.js";
+import { warn } from "../shared/util.js";
+class CFFFont {
+  #replacedGlyphId = -1;
+  constructor(file, properties) {
+    this.properties = properties;
+    const parser = new CFFParser(file, properties, SEAC_ANALYSIS_ENABLED);
+    this.cff = parser.parse();
+    const {
+      charStringCount
+    } = this.cff;
+    this.glyphZeroId = this.cff.duplicateFirstGlyph(true);
+    if (this.glyphZeroId > 0 && this.glyphZeroId < charStringCount) {
+      this.#replacedGlyphId = this.glyphZeroId;
+    }
+    const compiler = new CFFCompiler(this.cff);
+    this.seacs = this.cff.seacs;
+    try {
+      this.data = compiler.compile();
+    } catch (ex) {
+      warn(`Failed to compile font "${properties.loadedName}": "${ex}".`);
+      file.reset();
+      this.data = file.getBytes();
+    }
+    this._createBuiltInEncoding();
+  }
+  get numGlyphs() {
+    return this.cff.charStrings.count;
+  }
+  getCharset() {
+    return this.cff.charset.charset;
+  }
+  getGlyphMapping() {
+    const cff = this.cff;
+    const properties = this.properties;
+    const {
+      cidToGidMap,
+      cMap
+    } = properties;
+    const charsets = cff.charset.charset;
+    if (properties.composite) {
+      let invCidToGidMap;
+      if (cidToGidMap?.size) {
+        invCidToGidMap = new Map();
+        cidToGidMap.forEach((i, gid) => {
+          invCidToGidMap.set(gid, i);
+        });
+      }
+      const charCodeToGlyphId = new Map();
+      let charCode, glyphId;
+      if (cff.isCIDFont) {
+        for (glyphId = 0; glyphId < charsets.length; glyphId++) {
+          const cid = charsets[glyphId];
+          charCode = cMap.charCodeOf(cid);
+          if (invCidToGidMap?.has(charCode)) {
+            charCode = invCidToGidMap.get(charCode);
+          }
+          charCodeToGlyphId.set(charCode, glyphId);
+        }
+      } else {
+        for (glyphId = 0; glyphId < cff.charStrings.count; glyphId++) {
+          charCode = cMap.charCodeOf(glyphId);
+          charCodeToGlyphId.set(charCode, glyphId);
+        }
+      }
+      return charCodeToGlyphId;
+    }
+    let encoding = cff.encoding ? cff.encoding.encoding : null;
+    if (properties.isInternalFont) {
+      encoding = properties.defaultEncoding;
+    }
+    return type1FontGlyphMapping(properties, encoding, charsets);
+  }
+  hasGlyphId(id) {
+    return id !== this.#replacedGlyphId && this.cff.hasGlyphId(id);
+  }
+  _createBuiltInEncoding() {
+    const {
+      charset,
+      encoding
+    } = this.cff;
+    if (!charset || !encoding) {
+      return;
+    }
+    const charsets = charset.charset,
+      encodings = encoding.encoding;
+    const map = [];
+    for (const charCode in encodings) {
+      const glyphId = encodings[charCode];
+      if (glyphId >= 0) {
+        const glyphName = charsets[glyphId];
+        if (glyphName) {
+          map[charCode] = glyphName;
+        }
+      }
+    }
+    if (map.length > 0) {
+      this.properties.builtInEncoding = map;
+    }
+  }
+}
+export { CFFFont };

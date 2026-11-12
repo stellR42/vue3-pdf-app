@@ -1,12 +1,14 @@
 {
-    "extends": "./tsconfig.json",
-    "compilerOptions": {
-      "outDir": "dist/types",
-      "declaration": true,
-      "declarationMap": true,
-      "emitDeclarationOnly": true
-    },
-    "include": [
-      "src/components/pdf-viewer.vue"
-    ]
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist/types",
+    "declaration": true,
+    "emitDeclarationOnly": true
+  },
+  "include": [
+    "src/index.ts",
+    "src/components/pdf-viewer.vue",
+    "src/types/*.ts",
+    "src/pdfjs.d.ts"
+  ]
 }

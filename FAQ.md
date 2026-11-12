@@ -1,82 +1,85 @@
 - [Can I use two pdf viewers on a page?](#can-i-use-two-pdf-viewers-on-a-page)
-- [Can I interract with Mozilla's pdfjs library outside the event handlers of pdf viewer?](#can-i-interract-with-mozilla's-pdfjs-library-outside-the-event-handlers-of-pdf-viewer)
-- [Can I use pdf viewer in a dialog?](#can-i-use-pdf-viewer-in-a-dialog)
-- [Can I set a default page scale when a pdf document is opening?](#can-i-set-a-default-page-scale-when-a-pdf-document-is-opening)
-- [Can I programmatically jump to the certain page when a pdf document is opening?](#can-i-programmatically-jump-to-the-certain-page-when-a-pdf-document-is-opening)
+- [Can I use pdf.js outside the viewer's events?](#can-i-use-pdfjs-outside-the-viewers-events)
+- [Can I use the pdf viewer in a dialog?](#can-i-use-the-pdf-viewer-in-a-dialog)
+- [Can I set the starting zoom?](#can-i-set-the-starting-zoom)
+- [Can I open a PDF on a certain page?](#can-i-open-a-pdf-on-a-certain-page)
+- [Can I hide the editing tools?](#can-i-hide-the-editing-tools)
 
 Still have a question? Create an issue!
 
 # Can I use two pdf viewers on a page?
 
-It is impossible. The package repeats the structure of Mozilla's pdf viewer and internally it uses elements IDs to bind functionality. When two pdf viewers are used elements with equal IDs are created. That means that only the first pdf viewer can be operable.
+No. pdf.js keeps one viewer object for the whole page, so only one viewer can be open at a time. Mounting a second one closes the first and logs a warning.
 
-# Can I interract with Mozilla's pdfjs library outside the event handlers of pdf viewer?
+# Can I use pdf.js outside the viewer's events?
 
-Yes. You can bind pdfjs lib to parent data through `v-on:after-created` event. Make it non-reactive as it is a huge object:
+Yes. Keep the `app` object from `after-created`. Don't put it in `ref` or `reactive`: it's a large object and Vue would wrap all of it.
 
 ```vue
-<vue-pdf-app @after-created="afterCreatedHandler"></vue-pdf-app>
+<template>
+  <button @click="pdfApp?.zoomIn()">Zoom in</button>
+  <vue-pdf-app pdf="/sample.pdf" @after-created="afterCreated" />
+</template>
 
-<script>
-export default {
-  data() {},
-  methods: {
-    afterCreatedHandler(pdfApp) {
-      // this.pdfApp is non-reactive because it is not in data
-      // for typescript use class { pdfApp?: unknown }
-      this.pdfApp = pdfApp;
-    }
-  }
-};
+<script setup lang="ts">
+import VuePdfApp, { type PdfApp } from 'vue3-pdf-app';
+
+// Not reactive on purpose
+let pdfApp: PdfApp | undefined;
+
+function afterCreated(app: PdfApp) {
+  pdfApp = app;
+}
 </script>
 ```
 
-# Can I use pdf viewer in a dialog?
+# Can I use the pdf viewer in a dialog?
 
-It is possible in most cases. In case of troubles try to add `v-if` to pdf viewer:
+Yes. Render it with `v-if` so it mounts when the dialog opens and unmounts when it closes:
 
 ```vue
-<vue-pdf-app v-if="isDialogVisible"></vue-pdf-app>
+<vue-pdf-app v-if="isDialogVisible" pdf="/sample.pdf" />
 ```
 
-# Can I set a default page scale when a pdf document is opening?
+# Can I set the starting zoom?
+
+Use `page-scale`. Numbers are percentages.
 
 ```vue
-<vue-pdf-app @pages-rendered="pagesRenderedHandler"></vue-pdf-app>
-
-<script>
-export default {
-  methods: {
-    pagesRenderedHandler(pdfApp) {
-      setTimeout(() => {
-        pdfApp.pdfViewer.currentScaleValue = 1; // 100%;
-        // pdfApp.pdfViewer.currentScaleValue = 0.2 // 20%;
-        // pdfApp.pdfViewer.currentScaleValue = "page-actual"
-        // pdfApp.pdfViewer.currentScaleValue = "page-width"
-        // pdfApp.pdfViewer.currentScaleValue = "page-height"
-        // pdfApp.pdfViewer.currentScaleValue = "page-fit"
-        // pdfApp.pdfViewer.currentScaleValue = "auto"
-      });
-    }
-  }
-};
-</script>
+<vue-pdf-app pdf="/sample.pdf" :page-scale="75" />
+<vue-pdf-app pdf="/sample.pdf" page-scale="page-width" />
 ```
 
-# Can I programmatically jump to the certain page when a pdf document is opening?
+To change it after the PDF opens, set `app.pdfViewer.currentScaleValue` in `pages-rendered`.
+
+# Can I open a PDF on a certain page?
+
+Use `page-number`:
 
 ```vue
-<vue-pdf-app @pages-rendered="pagesRenderedHandler"></vue-pdf-app>
+<vue-pdf-app pdf="/sample.pdf" :page-number="3" />
+```
 
-<script>
-export default {
-  methods: {
-    pagesRenderedHandler(pdfApp) {
-      setTimeout(() => {
-        pdfApp.page = pageNumber;
-      });
-    }
-  }
-};
-</script>
+To jump later, set `app.page` on the `app` object.
+
+# Can I hide the editing tools?
+
+Yes, through `config`. Edits only live in the viewer, so hide them if your app doesn't save them anywhere:
+
+```vue
+<vue-pdf-app
+  pdf="/sample.pdf"
+  :config="{
+    toolbar: {
+      toolbarViewerRight: {
+        editorComment: false,
+        editorHighlight: false,
+        editorFreeText: false,
+        editorInk: false,
+        editorStamp: false,
+        editorSignature: false,
+      },
+    },
+  }"
+/>
 ```

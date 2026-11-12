@@ -1,20 +1,19 @@
 ---
 name: Bug report
-about: Please refer FAQ.md of the repo
+about: Something doesn't work. Check FAQ.md first.
 title: ''
 labels: bug
-assignees: sandanat
-
+assignees: stellR42
 ---
 
-Please provide a working example with a bug (git repo, [codesandbox](https://codesandbox.io/), source code at least, etc).
-It takes a lot of time to set up environment to confirm an issue.
-So I will resolve issues faster.
+Please include a way to reproduce the bug (a git repo, a [StackBlitz](https://stackblitz.com/) or [CodeSandbox](https://codesandbox.io/) link, or at least the code), and the PDF if you can share it. Issues with a working example get fixed much faster.
 
 #### Configuration:
-- Web browser and it`s version:
-- Operating system and it`s version:
-- vue-pdf-app version:
+
+- Browser and version:
+- Operating system and version:
+- vue3-pdf-app version:
+- Vue version:
 
 #### Steps to reproduce the problem:
 

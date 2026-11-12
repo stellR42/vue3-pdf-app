@@ -1,8 +1,4 @@
-/**
- * @licstart The following is the entire license notice for the
- * Javascript code in this page
- *
- * Copyright 2020 Mozilla Foundation
+/* Copyright 2024 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,315 +11,324 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
- * @licend The above is the entire license notice for the
- * Javascript code in this page
  */
-"use strict";
-
-Object.defineProperty(exports, "__esModule", {
-  value: true
-});
-exports.clearPrimitiveCaches = clearPrimitiveCaches;
-exports.isEOF = isEOF;
-exports.isCmd = isCmd;
-exports.isDict = isDict;
-exports.isName = isName;
-exports.isRef = isRef;
-exports.isRefsEqual = isRefsEqual;
-exports.isStream = isStream;
-exports.RefSetCache = exports.RefSet = exports.Ref = exports.Name = exports.Dict = exports.Cmd = exports.EOF = void 0;
-
-var _util = require("../shared/util.js");
-
-var EOF = {};
-exports.EOF = EOF;
-
-var Name = function NameClosure() {
-  let nameCache = Object.create(null);
-
-  function Name(name) {
+import "core-js/modules/es.array.push.js";
+import "core-js/modules/es.map.get-or-insert.js";
+import "core-js/modules/es.map.get-or-insert-computed.js";
+import "core-js/modules/es.set.difference.v2.js";
+import "core-js/modules/es.set.intersection.v2.js";
+import "core-js/modules/es.set.is-disjoint-from.v2.js";
+import "core-js/modules/es.set.is-subset-of.v2.js";
+import "core-js/modules/es.set.is-superset-of.v2.js";
+import "core-js/modules/es.set.symmetric-difference.v2.js";
+import "core-js/modules/es.set.union.v2.js";
+import { assert, makeArr, shadow, unreachable } from "../shared/util.js";
+const CIRCULAR_REF = Symbol("CIRCULAR_REF");
+const EOF = Symbol("EOF");
+const CmdCache = new Map();
+const NameCache = new Map();
+const RefCache = new Map();
+function clearPrimitiveCaches() {
+  CmdCache.clear();
+  NameCache.clear();
+  RefCache.clear();
+}
+class Name {
+  constructor(name) {
     this.name = name;
   }
-
-  Name.prototype = {};
-
-  Name.get = function Name_get(name) {
-    var nameValue = nameCache[name];
-    return nameValue ? nameValue : nameCache[name] = new Name(name);
-  };
-
-  Name._clearCache = function () {
-    nameCache = Object.create(null);
-  };
-
-  return Name;
-}();
-
-exports.Name = Name;
-
-var Cmd = function CmdClosure() {
-  let cmdCache = Object.create(null);
-
-  function Cmd(cmd) {
+  static get(name) {
+    let n = NameCache.get(name);
+    if (!n) {
+      n = new Name(name);
+      NameCache.set(name, n);
+    }
+    return n;
+  }
+}
+class Cmd {
+  constructor(cmd) {
     this.cmd = cmd;
   }
-
-  Cmd.prototype = {};
-
-  Cmd.get = function Cmd_get(cmd) {
-    var cmdValue = cmdCache[cmd];
-    return cmdValue ? cmdValue : cmdCache[cmd] = new Cmd(cmd);
-  };
-
-  Cmd._clearCache = function () {
-    cmdCache = Object.create(null);
-  };
-
-  return Cmd;
-}();
-
-exports.Cmd = Cmd;
-
-var Dict = function DictClosure() {
-  var nonSerializable = function nonSerializableClosure() {
-    return nonSerializable;
-  };
-
-  function Dict(xref) {
-    this._map = Object.create(null);
-    this.xref = xref;
-    this.objId = null;
-    this.suppressEncryption = false;
-    this.__nonSerializable__ = nonSerializable;
+  static get(cmd) {
+    let c = CmdCache.get(cmd);
+    if (!c) {
+      c = new Cmd(cmd);
+      CmdCache.set(cmd, c);
+    }
+    return c;
   }
-
-  Dict.prototype = {
-    assignXref: function Dict_assignXref(newXref) {
-      this.xref = newXref;
-    },
-
-    get(key1, key2, key3) {
-      let value = this._map[key1];
-
-      if (value === undefined && key2 !== undefined) {
-        value = this._map[key2];
-
-        if (value === undefined && key3 !== undefined) {
-          value = this._map[key3];
-        }
-      }
-
-      if (value instanceof Ref && this.xref) {
-        return this.xref.fetch(value, this.suppressEncryption);
-      }
-
-      return value;
-    },
-
-    async getAsync(key1, key2, key3) {
-      let value = this._map[key1];
-
-      if (value === undefined && key2 !== undefined) {
-        value = this._map[key2];
-
-        if (value === undefined && key3 !== undefined) {
-          value = this._map[key3];
-        }
-      }
-
-      if (value instanceof Ref && this.xref) {
-        return this.xref.fetchAsync(value, this.suppressEncryption);
-      }
-
-      return value;
-    },
-
-    getArray(key1, key2, key3) {
-      let value = this.get(key1, key2, key3);
-
-      if (!Array.isArray(value) || !this.xref) {
-        return value;
-      }
-
+}
+const nonSerializable = () => nonSerializable;
+class Dict {
+  __nonSerializable__ = nonSerializable;
+  #map = new Map();
+  objId = null;
+  suppressEncryption = false;
+  xref;
+  constructor(xref = null) {
+    this.xref = xref;
+  }
+  assignXref(newXref) {
+    this.xref = newXref;
+  }
+  get size() {
+    return this.#map.size;
+  }
+  #getValue(isAsync, key1, key2) {
+    let value = this.#map.get(key1);
+    if (value === undefined && key2 !== undefined) {
+      value = this.#map.get(key2);
+    }
+    if (value instanceof Ref && this.xref) {
+      return isAsync ? this.xref.fetchAsync(value, this.suppressEncryption) : this.xref.fetch(value, this.suppressEncryption);
+    }
+    return value;
+  }
+  get(key1, key2) {
+    return this.#getValue(false, key1, key2);
+  }
+  async getAsync(key1, key2) {
+    return this.#getValue(true, key1, key2);
+  }
+  getArray(key1, key2) {
+    let value = this.#getValue(false, key1, key2);
+    if (Array.isArray(value)) {
       value = value.slice();
-
       for (let i = 0, ii = value.length; i < ii; i++) {
-        if (!(value[i] instanceof Ref)) {
-          continue;
+        if (value[i] instanceof Ref && this.xref) {
+          value[i] = this.xref.fetch(value[i], this.suppressEncryption);
         }
-
-        value[i] = this.xref.fetch(value[i], this.suppressEncryption);
-      }
-
-      return value;
-    },
-
-    getRaw: function Dict_getRaw(key) {
-      return this._map[key];
-    },
-    getKeys: function Dict_getKeys() {
-      return Object.keys(this._map);
-    },
-    set: function Dict_set(key, value) {
-      this._map[key] = value;
-    },
-    has: function Dict_has(key) {
-      return this._map[key] !== undefined;
-    },
-    forEach: function Dict_forEach(callback) {
-      for (var key in this._map) {
-        callback(key, this.get(key));
       }
     }
-  };
-  Dict.empty = new Dict(null);
-
-  Dict.merge = function (xref, dictArray) {
-    const mergedDict = new Dict(xref);
-
-    for (let i = 0, ii = dictArray.length; i < ii; i++) {
-      const dict = dictArray[i];
-
-      if (!isDict(dict)) {
+    return value;
+  }
+  getRaw(key) {
+    return this.#map.get(key);
+  }
+  getKeys() {
+    return this.#map.keys();
+  }
+  getRawValues() {
+    return this.#map.values();
+  }
+  getRawEntries() {
+    return this.#map.entries();
+  }
+  set(key, value) {
+    this.#map.set(key, value);
+  }
+  setIfNotExists(key, value) {
+    if (!this.has(key)) {
+      this.set(key, value);
+    }
+  }
+  setIfNumber(key, value) {
+    if (typeof value === "number") {
+      this.set(key, value);
+    }
+  }
+  setIfArray(key, value) {
+    if (Array.isArray(value) || ArrayBuffer.isView(value)) {
+      this.set(key, value);
+    }
+  }
+  setIfDefined(key, value) {
+    if (value !== undefined && value !== null) {
+      this.set(key, value);
+    }
+  }
+  setIfName(key, value) {
+    if (typeof value === "string") {
+      this.set(key, Name.get(value));
+    } else if (value instanceof Name) {
+      this.set(key, value);
+    }
+  }
+  setIfDict(key, value) {
+    if (value instanceof Dict) {
+      this.set(key, value);
+    }
+  }
+  has(key) {
+    return this.#map.has(key);
+  }
+  *[Symbol.iterator]() {
+    for (const [key, value] of this.#map) {
+      yield [key, value instanceof Ref && this.xref ? this.xref.fetch(value, this.suppressEncryption) : value];
+    }
+  }
+  static get empty() {
+    const emptyDict = new Dict(null);
+    emptyDict.set = (key, value) => {
+      unreachable("Should not call `set` on the empty dictionary.");
+    };
+    return shadow(this, "empty", emptyDict);
+  }
+  static merge({
+    xref,
+    dictArray,
+    mergeSubDicts = false
+  }) {
+    const mergedDict = new Dict(xref),
+      properties = new Map();
+    for (const dict of dictArray) {
+      if (!(dict instanceof Dict)) {
         continue;
       }
-
-      for (const keyName in dict._map) {
-        if (mergedDict._map[keyName] !== undefined) {
+      for (const [key, value] of dict.getRawEntries()) {
+        const property = properties.getOrInsertComputed(key, makeArr);
+        if (property.length && !(mergeSubDicts && value instanceof Dict)) {
           continue;
         }
-
-        mergedDict._map[keyName] = dict._map[keyName];
+        property.push(value);
       }
     }
-
-    return mergedDict;
-  };
-
-  return Dict;
-}();
-
-exports.Dict = Dict;
-
-var Ref = function RefClosure() {
-  let refCache = Object.create(null);
-
-  function Ref(num, gen) {
+    for (const [name, values] of properties) {
+      if (values.length === 1 || !(values[0] instanceof Dict)) {
+        mergedDict.set(name, values[0]);
+        continue;
+      }
+      const subDict = new Dict(xref);
+      for (const dict of values) {
+        for (const [key, value] of dict.getRawEntries()) {
+          subDict.setIfNotExists(key, value);
+        }
+      }
+      if (subDict.size > 0) {
+        mergedDict.set(name, subDict);
+      }
+    }
+    properties.clear();
+    return mergedDict.size > 0 ? mergedDict : Dict.empty;
+  }
+  clone() {
+    const dict = new Dict(this.xref);
+    for (const [key, value] of this.#map) {
+      dict.set(key, value);
+    }
+    return dict;
+  }
+  delete(key) {
+    this.#map.delete(key);
+  }
+}
+class Ref {
+  #str;
+  constructor(str, num, gen) {
+    this.#str = str;
     this.num = num;
     this.gen = gen;
   }
-
-  Ref.prototype = {
-    toString: function Ref_toString() {
-      if (this.gen === 0) {
-        return `${this.num}R`;
-      }
-
-      return `${this.num}R${this.gen}`;
-    }
-  };
-
-  Ref.get = function (num, gen) {
-    const key = gen === 0 ? `${num}R` : `${num}R${gen}`;
-    const refValue = refCache[key];
-    return refValue ? refValue : refCache[key] = new Ref(num, gen);
-  };
-
-  Ref._clearCache = function () {
-    refCache = Object.create(null);
-  };
-
-  return Ref;
-}();
-
-exports.Ref = Ref;
-
-var RefSet = function RefSetClosure() {
-  function RefSet() {
-    this.dict = Object.create(null);
+  toString() {
+    return this.#str;
   }
-
-  RefSet.prototype = {
-    has: function RefSet_has(ref) {
-      return ref.toString() in this.dict;
-    },
-    put: function RefSet_put(ref) {
-      this.dict[ref.toString()] = true;
-    },
-    remove: function RefSet_remove(ref) {
-      delete this.dict[ref.toString()];
+  static fromString(str) {
+    let ref = RefCache.get(str);
+    if (ref) {
+      return ref;
     }
-  };
-  return RefSet;
-}();
-
-exports.RefSet = RefSet;
-
-var RefSetCache = function RefSetCacheClosure() {
-  function RefSetCache() {
-    this.dict = Object.create(null);
+    const m = /^([1-9]\d*)R([1-9]\d*)?$/.exec(str);
+    if (!m) {
+      return null;
+    }
+    ref = new Ref(str, parseInt(m[1], 10), !m[2] ? 0 : parseInt(m[2], 10));
+    RefCache.set(str, ref);
+    return ref;
   }
-
-  RefSetCache.prototype = {
-    get: function RefSetCache_get(ref) {
-      return this.dict[ref.toString()];
-    },
-    has: function RefSetCache_has(ref) {
-      return ref.toString() in this.dict;
-    },
-    put: function RefSetCache_put(ref, obj) {
-      this.dict[ref.toString()] = obj;
-    },
-    putAlias: function RefSetCache_putAlias(ref, aliasRef) {
-      this.dict[ref.toString()] = this.get(aliasRef);
-    },
-    forEach: function RefSetCache_forEach(callback) {
-      for (const i in this.dict) {
-        callback(this.dict[i]);
-      }
-    },
-    clear: function RefSetCache_clear() {
-      this.dict = Object.create(null);
+  static get(num, gen) {
+    const str = gen === 0 ? `${num}R` : `${num}R${gen}`;
+    let ref = RefCache.get(str);
+    if (!ref) {
+      ref = new Ref(str, num, gen);
+      RefCache.set(str, ref);
     }
-  };
-  return RefSetCache;
-}();
-
-exports.RefSetCache = RefSetCache;
-
-function isEOF(v) {
-  return v === EOF;
+    return ref;
+  }
 }
-
+class RefSet {
+  #set = new Set();
+  constructor(parent = null) {
+    if (parent) {
+      for (const refStr of parent) {
+        this.#set.add(refStr);
+      }
+    }
+  }
+  has(ref) {
+    return this.#set.has(ref.toString());
+  }
+  put(ref) {
+    this.#set.add(ref.toString());
+  }
+  remove(ref) {
+    this.#set.delete(ref.toString());
+  }
+  [Symbol.iterator]() {
+    return this.#set.keys();
+  }
+  clear() {
+    this.#set.clear();
+  }
+}
+class RefMap {
+  #map = new Map();
+  get size() {
+    return this.#map.size;
+  }
+  get(ref) {
+    return this.#map.get(ref.toString());
+  }
+  has(ref) {
+    return this.#map.has(ref.toString());
+  }
+  put(ref, obj) {
+    this.#map.set(ref.toString(), obj);
+  }
+  putAlias(ref, aliasRef) {
+    this.#map.set(ref.toString(), this.get(aliasRef));
+  }
+  remove(ref) {
+    this.#map.delete(ref.toString());
+  }
+  getOrPutComputed(ref, callback) {
+    const map = this.#map,
+      refStr = ref.toString();
+    if (!map.has(refStr)) {
+      map.set(refStr, callback(ref));
+    }
+    return map.get(refStr);
+  }
+  [Symbol.iterator]() {
+    return this.#map.values();
+  }
+  clear() {
+    this.#map.clear();
+  }
+  *values() {
+    yield* this.#map.values();
+  }
+  *items() {
+    for (const [ref, value] of this.#map) {
+      yield [Ref.fromString(ref), value];
+    }
+  }
+  *keys() {
+    for (const ref of this.#map.keys()) {
+      yield Ref.fromString(ref);
+    }
+  }
+}
 function isName(v, name) {
   return v instanceof Name && (name === undefined || v.name === name);
 }
-
 function isCmd(v, cmd) {
   return v instanceof Cmd && (cmd === undefined || v.cmd === cmd);
 }
-
 function isDict(v, type) {
   return v instanceof Dict && (type === undefined || isName(v.get("Type"), type));
 }
-
-function isRef(v) {
-  return v instanceof Ref;
-}
-
 function isRefsEqual(v1, v2) {
   return v1.num === v2.num && v1.gen === v2.gen;
 }
-
-function isStream(v) {
-  return typeof v === "object" && v !== null && v.getBytes !== undefined;
-}
-
-function clearPrimitiveCaches() {
-  Cmd._clearCache();
-
-  Name._clearCache();
-
-  Ref._clearCache();
-}
+export { CIRCULAR_REF, clearPrimitiveCaches, Cmd, Dict, EOF, isCmd, isDict, isName, isRefsEqual, Name, Ref, RefMap, RefSet };

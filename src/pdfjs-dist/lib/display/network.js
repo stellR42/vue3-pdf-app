@@ -1,8 +1,4 @@
-/**
- * @licstart The following is the entire license notice for the
- * Javascript code in this page
- *
- * Copyright 2020 Mozilla Foundation
+/* Copyright 2024 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,518 +11,279 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
- * @licend The above is the entire license notice for the
- * Javascript code in this page
  */
-"use strict";
-
-Object.defineProperty(exports, "__esModule", {
-  value: true
-});
-exports.PDFNetworkStream = void 0;
-
-var _util = require("../shared/util.js");
-
-var _network_utils = require("./network_utils.js");
-
-;
+import "core-js/modules/es.array.push.js";
+import "core-js/modules/es.iterator.constructor.js";
+import "core-js/modules/es.iterator.map.js";
+import "core-js/modules/es.weak-map.get-or-insert.js";
+import "core-js/modules/es.weak-map.get-or-insert-computed.js";
+import { assert, stringToBytes, warn } from "../shared/util.js";
+import { BasePDFStream, BasePDFStreamRangeReader, BasePDFStreamReader } from "../shared/base_pdf_stream.js";
+import { createHeaders, createResponseError, ensureResponseOrigin, extractFilenameFromHeader, getResponseOrigin, trimHeadersEnd, validateRangeRequestCapabilities } from "./network_utils.js";
+import { endRequests } from "./transport_stream.js";
 const OK_RESPONSE = 200;
 const PARTIAL_CONTENT_RESPONSE = 206;
-
-function getArrayBuffer(xhr) {
-  const data = xhr.response;
-
-  if (typeof data !== "string") {
-    return data;
-  }
-
-  const array = (0, _util.stringToBytes)(data);
-  return array.buffer;
+function getArrayBuffer(val) {
+  return typeof val !== "string" ? val : stringToBytes(val).buffer;
 }
-
-class NetworkManager {
-  constructor(url, args) {
+class PDFNetworkStream extends BasePDFStream {
+  #pendingRequests = new WeakMap();
+  _responseOrigin = null;
+  constructor(source) {
+    super(source, PDFNetworkStreamReader, PDFNetworkStreamRangeReader);
+    const {
+      httpHeaders,
+      url
+    } = source;
     this.url = url;
-    args = args || {};
-    this.isHttp = /^https?:/i.test(url);
-    this.httpHeaders = this.isHttp && args.httpHeaders || {};
-    this.withCredentials = args.withCredentials || false;
-
-    this.getXhr = args.getXhr || function NetworkManager_getXhr() {
-      return new XMLHttpRequest();
-    };
-
-    this.currXhrId = 0;
-    this.pendingRequests = Object.create(null);
+    this.isHttp = /https?:/.test(url.protocol);
+    this.headers = createHeaders(this.isHttp, httpHeaders);
   }
-
-  requestRange(begin, end, listeners) {
-    const args = {
-      begin,
-      end
+  _request(args) {
+    const xhr = new XMLHttpRequest();
+    const pendingRequest = {
+      validateStatus: null,
+      onHeadersReceived: args.onHeadersReceived,
+      onDone: args.onDone,
+      onError: args.onError,
+      onProgress: args.onProgress
     };
-
-    for (const prop in listeners) {
-      args[prop] = listeners[prop];
-    }
-
-    return this.request(args);
-  }
-
-  requestFull(listeners) {
-    return this.request(listeners);
-  }
-
-  request(args) {
-    const xhr = this.getXhr();
-    const xhrId = this.currXhrId++;
-    const pendingRequest = this.pendingRequests[xhrId] = {
-      xhr
-    };
+    this.#pendingRequests.set(xhr, pendingRequest);
     xhr.open("GET", this.url);
-    xhr.withCredentials = this.withCredentials;
-
-    for (const property in this.httpHeaders) {
-      const value = this.httpHeaders[property];
-
-      if (typeof value === "undefined") {
-        continue;
-      }
-
-      xhr.setRequestHeader(property, value);
+    xhr.withCredentials = this._source.withCredentials;
+    for (const [key, val] of this.headers) {
+      xhr.setRequestHeader(key, val);
     }
-
     if (this.isHttp && "begin" in args && "end" in args) {
       xhr.setRequestHeader("Range", `bytes=${args.begin}-${args.end - 1}`);
-      pendingRequest.expectedStatus = PARTIAL_CONTENT_RESPONSE;
+      pendingRequest.validateStatus = status => status === PARTIAL_CONTENT_RESPONSE || status === OK_RESPONSE;
     } else {
-      pendingRequest.expectedStatus = OK_RESPONSE;
+      pendingRequest.validateStatus = status => status === OK_RESPONSE;
     }
-
     xhr.responseType = "arraybuffer";
-
-    if (args.onError) {
-      xhr.onerror = function (evt) {
-        args.onError(xhr.status);
-      };
-    }
-
-    xhr.onreadystatechange = this.onStateChange.bind(this, xhrId);
-    xhr.onprogress = this.onProgress.bind(this, xhrId);
-    pendingRequest.onHeadersReceived = args.onHeadersReceived;
-    pendingRequest.onDone = args.onDone;
-    pendingRequest.onError = args.onError;
-    pendingRequest.onProgress = args.onProgress;
+    assert(args.onError, "Expected `onError` callback to be provided.");
+    xhr.onerror = () => args.onError(xhr.status);
+    xhr.onreadystatechange = this.#onStateChange.bind(this, xhr);
+    xhr.onprogress = this.#onProgress.bind(this, xhr);
     xhr.send(null);
-    return xhrId;
+    return xhr;
   }
-
-  onProgress(xhrId, evt) {
-    const pendingRequest = this.pendingRequests[xhrId];
-
+  #onProgress(xhr, evt) {
+    const pendingRequest = this.#pendingRequests.get(xhr);
+    pendingRequest?.onProgress?.(evt);
+  }
+  #onStateChange(xhr, evt) {
+    const pendingRequest = this.#pendingRequests.get(xhr);
     if (!pendingRequest) {
       return;
     }
-
-    if (pendingRequest.onProgress) {
-      pendingRequest.onProgress(evt);
-    }
-  }
-
-  onStateChange(xhrId, evt) {
-    const pendingRequest = this.pendingRequests[xhrId];
-
-    if (!pendingRequest) {
-      return;
-    }
-
-    const xhr = pendingRequest.xhr;
-
     if (xhr.readyState >= 2 && pendingRequest.onHeadersReceived) {
       pendingRequest.onHeadersReceived();
       delete pendingRequest.onHeadersReceived;
     }
-
     if (xhr.readyState !== 4) {
       return;
     }
-
-    if (!(xhrId in this.pendingRequests)) {
+    if (!this.#pendingRequests.has(xhr)) {
       return;
     }
-
-    delete this.pendingRequests[xhrId];
-
+    this.#pendingRequests.delete(xhr);
     if (xhr.status === 0 && this.isHttp) {
-      if (pendingRequest.onError) {
-        pendingRequest.onError(xhr.status);
-      }
-
+      pendingRequest.onError(xhr.status);
       return;
     }
-
     const xhrStatus = xhr.status || OK_RESPONSE;
-    const ok_response_on_range_request = xhrStatus === OK_RESPONSE && pendingRequest.expectedStatus === PARTIAL_CONTENT_RESPONSE;
-
-    if (!ok_response_on_range_request && xhrStatus !== pendingRequest.expectedStatus) {
-      if (pendingRequest.onError) {
-        pendingRequest.onError(xhr.status);
-      }
-
+    if (!pendingRequest.validateStatus(xhrStatus)) {
+      pendingRequest.onError(xhr.status);
       return;
     }
-
-    const chunk = getArrayBuffer(xhr);
-
+    const chunk = getArrayBuffer(xhr.response);
     if (xhrStatus === PARTIAL_CONTENT_RESPONSE) {
       const rangeHeader = xhr.getResponseHeader("Content-Range");
-      const matches = /bytes (\d+)-(\d+)\/(\d+)/.exec(rangeHeader);
-      pendingRequest.onDone({
-        begin: parseInt(matches[1], 10),
-        chunk
-      });
+      if (/bytes \d+-\d+\/\d+/.test(rangeHeader)) {
+        pendingRequest.onDone(chunk);
+      } else {
+        warn(`Missing or invalid "Content-Range" header.`);
+        pendingRequest.onError(0);
+      }
     } else if (chunk) {
-      pendingRequest.onDone({
-        begin: 0,
-        chunk
-      });
-    } else if (pendingRequest.onError) {
+      pendingRequest.onDone(chunk);
+    } else {
       pendingRequest.onError(xhr.status);
     }
   }
-
-  hasPendingRequests() {
-    for (const xhrId in this.pendingRequests) {
-      return true;
-    }
-
-    return false;
-  }
-
-  getRequestXhr(xhrId) {
-    return this.pendingRequests[xhrId].xhr;
-  }
-
-  isPendingRequest(xhrId) {
-    return xhrId in this.pendingRequests;
-  }
-
-  abortAllRequests() {
-    for (const xhrId in this.pendingRequests) {
-      this.abortRequest(xhrId | 0);
+  _abortRequest(xhr) {
+    if (this.#pendingRequests.has(xhr)) {
+      this.#pendingRequests.delete(xhr);
+      xhr.abort();
     }
   }
-
-  abortRequest(xhrId) {
-    const xhr = this.pendingRequests[xhrId].xhr;
-    delete this.pendingRequests[xhrId];
-    xhr.abort();
-  }
-
-}
-
-class PDFNetworkStream {
-  constructor(source) {
-    this._source = source;
-    this._manager = new NetworkManager(source.url, {
-      httpHeaders: source.httpHeaders,
-      withCredentials: source.withCredentials
-    });
-    this._rangeChunkSize = source.rangeChunkSize;
-    this._fullRequestReader = null;
-    this._rangeRequestReaders = [];
-  }
-
-  _onRangeRequestReaderClosed(reader) {
-    const i = this._rangeRequestReaders.indexOf(reader);
-
-    if (i >= 0) {
-      this._rangeRequestReaders.splice(i, 1);
-    }
-  }
-
-  getFullReader() {
-    (0, _util.assert)(!this._fullRequestReader);
-    this._fullRequestReader = new PDFNetworkStreamFullRequestReader(this._manager, this._source);
-    return this._fullRequestReader;
-  }
-
   getRangeReader(begin, end) {
-    const reader = new PDFNetworkStreamRangeRequestReader(this._manager, begin, end);
-    reader.onClosed = this._onRangeRequestReaderClosed.bind(this);
-
-    this._rangeRequestReaders.push(reader);
-
+    const reader = super.getRangeReader(begin, end);
+    if (reader) {
+      reader.onClosed = () => this._rangeReaders.delete(reader);
+    }
     return reader;
   }
-
-  cancelAllRequests(reason) {
-    if (this._fullRequestReader) {
-      this._fullRequestReader.cancel(reason);
-    }
-
-    const readers = this._rangeRequestReaders.slice(0);
-
-    readers.forEach(function (reader) {
-      reader.cancel(reason);
-    });
-  }
-
 }
-
-exports.PDFNetworkStream = PDFNetworkStream;
-
-class PDFNetworkStreamFullRequestReader {
-  constructor(manager, source) {
-    this._manager = manager;
-    const args = {
-      onHeadersReceived: this._onHeadersReceived.bind(this),
-      onDone: this._onDone.bind(this),
-      onError: this._onError.bind(this),
-      onProgress: this._onProgress.bind(this)
-    };
-    this._url = source.url;
-    this._fullRequestId = manager.requestFull(args);
-    this._headersReceivedCapability = (0, _util.createPromiseCapability)();
-    this._disableRange = source.disableRange || false;
-    this._contentLength = source.length;
-    this._rangeChunkSize = source.rangeChunkSize;
-
-    if (!this._rangeChunkSize && !this._disableRange) {
-      this._disableRange = true;
-    }
-
-    this._isStreamingSupported = false;
-    this._isRangeSupported = false;
-    this._cachedChunks = [];
-    this._requests = [];
-    this._done = false;
-    this._storedError = undefined;
-    this._filename = null;
-    this.onProgress = null;
+class PDFNetworkStreamReader extends BasePDFStreamReader {
+  #endRequests = endRequests.bind(this);
+  _cachedChunks = [];
+  _done = false;
+  _requests = [];
+  _storedError = null;
+  constructor(stream) {
+    super(stream);
+    this._fullRequestXhr = stream._request({
+      onHeadersReceived: this.#onHeadersReceived.bind(this),
+      onDone: this.#onDone.bind(this),
+      onError: this.#onError.bind(this),
+      onProgress: this.#onProgress.bind(this)
+    });
   }
-
-  _onHeadersReceived() {
-    const fullRequestXhrId = this._fullRequestId;
-
-    const fullRequestXhr = this._manager.getRequestXhr(fullRequestXhrId);
-
-    const getResponseHeader = name => {
-      return fullRequestXhr.getResponseHeader(name);
-    };
-
+  #onHeadersReceived() {
+    const stream = this._stream;
     const {
-      allowRangeRequests,
-      suggestedLength
-    } = (0, _network_utils.validateRangeRequestCapabilities)({
-      getResponseHeader,
-      isHttp: this._manager.isHttp,
-      rangeChunkSize: this._rangeChunkSize,
-      disableRange: this._disableRange
+      disableRange,
+      rangeChunkSize
+    } = stream._source;
+    const fullRequestXhr = this._fullRequestXhr;
+    stream._responseOrigin = getResponseOrigin(fullRequestXhr.responseURL);
+    const rawResponseHeaders = fullRequestXhr.getAllResponseHeaders();
+    const responseHeaders = new Headers(rawResponseHeaders ? trimHeadersEnd(rawResponseHeaders.trimStart()).split(/[\r\n]+/).map(x => {
+      const [key, ...val] = x.split(": ");
+      return [key, val.join(": ")];
+    }) : []);
+    const {
+      contentLength,
+      isRangeSupported
+    } = validateRangeRequestCapabilities({
+      responseHeaders,
+      isHttp: stream.isHttp,
+      rangeChunkSize,
+      disableRange
     });
-
-    if (allowRangeRequests) {
-      this._isRangeSupported = true;
-    }
-
-    this._contentLength = suggestedLength || this._contentLength;
-    this._filename = (0, _network_utils.extractFilenameFromHeader)(getResponseHeader);
-
+    this._contentLength = contentLength;
+    this._isRangeSupported = isRangeSupported;
+    this._filename = extractFilenameFromHeader(responseHeaders);
     if (this._isRangeSupported) {
-      this._manager.abortRequest(fullRequestXhrId);
+      stream._abortRequest(fullRequestXhr);
     }
-
-    this._headersReceivedCapability.resolve();
+    this._headersCapability.resolve();
   }
-
-  _onDone(args) {
-    if (args) {
-      if (this._requests.length > 0) {
-        const requestCapability = this._requests.shift();
-
-        requestCapability.resolve({
-          value: args.chunk,
-          done: false
-        });
-      } else {
-        this._cachedChunks.push(args.chunk);
-      }
+  #onDone(chunk) {
+    if (this._requests.length > 0) {
+      const capability = this._requests.shift();
+      capability.resolve({
+        value: chunk,
+        done: false
+      });
+    } else {
+      this._cachedChunks.push(chunk);
     }
-
     this._done = true;
-
-    if (this._cachedChunks.length > 0) {
-      return;
-    }
-
-    this._requests.forEach(function (requestCapability) {
-      requestCapability.resolve({
-        value: undefined,
-        done: true
-      });
-    });
-
-    this._requests = [];
-  }
-
-  _onError(status) {
-    const url = this._url;
-    const exception = (0, _network_utils.createResponseStatusError)(status, url);
-    this._storedError = exception;
-
-    this._headersReceivedCapability.reject(exception);
-
-    this._requests.forEach(function (requestCapability) {
-      requestCapability.reject(exception);
-    });
-
-    this._requests = [];
-    this._cachedChunks = [];
-  }
-
-  _onProgress(data) {
-    if (this.onProgress) {
-      this.onProgress({
-        loaded: data.loaded,
-        total: data.lengthComputable ? data.total : this._contentLength
-      });
+    if (this._cachedChunks.length === 0) {
+      this.#endRequests();
     }
   }
-
-  get filename() {
-    return this._filename;
+  #onError(status) {
+    this._storedError = createResponseError(status, this._stream.url);
+    this._headersCapability.reject(this._storedError);
+    for (const capability of this._requests) {
+      capability.reject(this._storedError);
+    }
+    this._requests.length = 0;
+    this._cachedChunks.length = 0;
   }
-
-  get isRangeSupported() {
-    return this._isRangeSupported;
+  #onProgress(evt) {
+    this.onProgress?.({
+      loaded: evt.loaded,
+      total: evt.lengthComputable ? evt.total : this._contentLength
+    });
   }
-
-  get isStreamingSupported() {
-    return this._isStreamingSupported;
-  }
-
-  get contentLength() {
-    return this._contentLength;
-  }
-
-  get headersReady() {
-    return this._headersReceivedCapability.promise;
-  }
-
   async read() {
+    await this._headersCapability.promise;
     if (this._storedError) {
       throw this._storedError;
     }
-
     if (this._cachedChunks.length > 0) {
       const chunk = this._cachedChunks.shift();
-
       return {
         value: chunk,
         done: false
       };
     }
-
     if (this._done) {
       return {
         value: undefined,
         done: true
       };
     }
-
-    const requestCapability = (0, _util.createPromiseCapability)();
-
-    this._requests.push(requestCapability);
-
-    return requestCapability.promise;
+    const capability = Promise.withResolvers();
+    this._requests.push(capability);
+    return capability.promise;
   }
-
   cancel(reason) {
     this._done = true;
-
-    this._headersReceivedCapability.reject(reason);
-
-    this._requests.forEach(function (requestCapability) {
-      requestCapability.resolve({
-        value: undefined,
-        done: true
-      });
-    });
-
-    this._requests = [];
-
-    if (this._manager.isPendingRequest(this._fullRequestId)) {
-      this._manager.abortRequest(this._fullRequestId);
-    }
-
-    this._fullRequestReader = null;
+    this._headersCapability.reject(reason);
+    this.#endRequests();
+    this._stream._abortRequest(this._fullRequestXhr);
+    this._fullRequestXhr = null;
   }
-
 }
-
-class PDFNetworkStreamRangeRequestReader {
-  constructor(manager, begin, end) {
-    this._manager = manager;
-    const args = {
-      onDone: this._onDone.bind(this),
-      onProgress: this._onProgress.bind(this)
-    };
-    this._requestId = manager.requestRange(begin, end, args);
-    this._requests = [];
-    this._queuedChunk = null;
-    this._done = false;
-    this.onProgress = null;
-    this.onClosed = null;
+class PDFNetworkStreamRangeReader extends BasePDFStreamRangeReader {
+  #endRequests = endRequests.bind(this);
+  onClosed = null;
+  _done = false;
+  _queuedChunk = null;
+  _requests = [];
+  _storedError = null;
+  constructor(stream, begin, end) {
+    super(stream, begin, end);
+    this._requestXhr = stream._request({
+      begin,
+      end,
+      onHeadersReceived: this.#onHeadersReceived.bind(this),
+      onDone: this.#onDone.bind(this),
+      onError: this.#onError.bind(this),
+      onProgress: null
+    });
   }
-
-  _close() {
-    if (this.onClosed) {
-      this.onClosed(this);
+  #onHeadersReceived() {
+    const responseOrigin = getResponseOrigin(this._requestXhr?.responseURL);
+    try {
+      ensureResponseOrigin(responseOrigin, this._stream._responseOrigin);
+    } catch (ex) {
+      this._storedError = ex;
+      this.#onError(0);
     }
   }
-
-  _onDone(data) {
-    const chunk = data.chunk;
-
+  #onDone(chunk) {
     if (this._requests.length > 0) {
-      const requestCapability = this._requests.shift();
-
-      requestCapability.resolve({
+      const capability = this._requests.shift();
+      capability.resolve({
         value: chunk,
         done: false
       });
     } else {
       this._queuedChunk = chunk;
     }
-
     this._done = true;
-
-    this._requests.forEach(function (requestCapability) {
-      requestCapability.resolve({
-        value: undefined,
-        done: true
-      });
-    });
-
-    this._requests = [];
-
-    this._close();
+    this.#endRequests();
+    this.onClosed?.();
   }
-
-  _onProgress(evt) {
-    if (!this.isStreamingSupported && this.onProgress) {
-      this.onProgress({
-        loaded: evt.loaded
-      });
+  #onError(status) {
+    this._storedError ??= createResponseError(status, this._stream.url);
+    for (const capability of this._requests) {
+      capability.reject(this._storedError);
     }
+    this._requests.length = 0;
+    this._queuedChunk = null;
   }
-
-  get isStreamingSupported() {
-    return false;
-  }
-
   async read() {
+    if (this._storedError) {
+      throw this._storedError;
+    }
     if (this._queuedChunk !== null) {
       const chunk = this._queuedChunk;
       this._queuedChunk = null;
@@ -535,38 +292,21 @@ class PDFNetworkStreamRangeRequestReader {
         done: false
       };
     }
-
     if (this._done) {
       return {
         value: undefined,
         done: true
       };
     }
-
-    const requestCapability = (0, _util.createPromiseCapability)();
-
-    this._requests.push(requestCapability);
-
-    return requestCapability.promise;
+    const capability = Promise.withResolvers();
+    this._requests.push(capability);
+    return capability.promise;
   }
-
   cancel(reason) {
     this._done = true;
-
-    this._requests.forEach(function (requestCapability) {
-      requestCapability.resolve({
-        value: undefined,
-        done: true
-      });
-    });
-
-    this._requests = [];
-
-    if (this._manager.isPendingRequest(this._requestId)) {
-      this._manager.abortRequest(this._requestId);
-    }
-
-    this._close();
+    this.#endRequests();
+    this._stream._abortRequest(this._requestXhr);
+    this.onClosed?.();
   }
-
 }
+export { PDFNetworkStream };

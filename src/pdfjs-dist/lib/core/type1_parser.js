@@ -1,8 +1,4 @@
-/**
- * @licstart The following is the entire license notice for the
- * Javascript code in this page
- *
- * Copyright 2020 Mozilla Foundation
+/* Copyright 2024 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,712 +11,798 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
- * @licend The above is the entire license notice for the
- * Javascript code in this page
  */
-"use strict";
-
-Object.defineProperty(exports, "__esModule", {
-  value: true
-});
-exports.Type1Parser = void 0;
-
-var _encodings = require("./encodings.js");
-
-var _core_utils = require("./core_utils.js");
-
-var _stream = require("./stream.js");
-
-var _util = require("../shared/util.js");
-
-var HINTING_ENABLED = false;
-
-var Type1CharString = function Type1CharStringClosure() {
-  var COMMAND_MAP = {
-    hstem: [1],
-    vstem: [3],
-    vmoveto: [4],
-    rlineto: [5],
-    hlineto: [6],
-    vlineto: [7],
-    rrcurveto: [8],
-    callsubr: [10],
-    flex: [12, 35],
-    drop: [12, 18],
-    endchar: [14],
-    rmoveto: [21],
-    hmoveto: [22],
-    vhcurveto: [30],
-    hvcurveto: [31]
-  };
-
-  function Type1CharString() {
-    this.width = 0;
-    this.lsb = 0;
-    this.flexing = false;
-    this.output = [];
-    this.stack = [];
-  }
-
-  Type1CharString.prototype = {
-    convert: function Type1CharString_convert(encoded, subrs, seacAnalysisEnabled) {
-      var count = encoded.length;
-      var error = false;
-      var wx, sbx, subrNumber;
-
-      for (var i = 0; i < count; i++) {
-        var value = encoded[i];
-
-        if (value < 32) {
-          if (value === 12) {
-            value = (value << 8) + encoded[++i];
-          }
-
-          switch (value) {
-            case 1:
-              if (!HINTING_ENABLED) {
-                this.stack = [];
-                break;
-              }
-
-              error = this.executeCommand(2, COMMAND_MAP.hstem);
-              break;
-
-            case 3:
-              if (!HINTING_ENABLED) {
-                this.stack = [];
-                break;
-              }
-
-              error = this.executeCommand(2, COMMAND_MAP.vstem);
-              break;
-
-            case 4:
-              if (this.flexing) {
-                if (this.stack.length < 1) {
-                  error = true;
-                  break;
-                }
-
-                var dy = this.stack.pop();
-                this.stack.push(0, dy);
-                break;
-              }
-
-              error = this.executeCommand(1, COMMAND_MAP.vmoveto);
-              break;
-
-            case 5:
-              error = this.executeCommand(2, COMMAND_MAP.rlineto);
-              break;
-
-            case 6:
-              error = this.executeCommand(1, COMMAND_MAP.hlineto);
-              break;
-
-            case 7:
-              error = this.executeCommand(1, COMMAND_MAP.vlineto);
-              break;
-
-            case 8:
-              error = this.executeCommand(6, COMMAND_MAP.rrcurveto);
-              break;
-
-            case 9:
+import "core-js/modules/es.array.push.js";
+import "core-js/modules/es.map.get-or-insert.js";
+import "core-js/modules/es.map.get-or-insert-computed.js";
+import "core-js/modules/es.typed-array.with.js";
+import "core-js/modules/es.uint8-array.set-from-base64.js";
+import "core-js/modules/es.uint8-array.set-from-hex.js";
+import "core-js/modules/es.uint8-array.to-base64.js";
+import "core-js/modules/es.uint8-array.to-hex.js";
+import { getEncoding } from "./encodings.js";
+import { isWhiteSpace } from "./core_utils.js";
+import { Stream } from "./stream.js";
+import { toHexDigit } from "./parser.js";
+import { warn } from "../shared/util.js";
+const HINTING_ENABLED = false;
+const MAX_SUBR_NESTING = 16;
+const MAX_CHARSTRING_TOKENS = 64 * 1024 * 1024;
+const MAX_STACK_SIZE = 48;
+const MAX_CHARSTRING_LENGTH = 65535;
+const COMMAND_MAP = {
+  hstem: [1],
+  vstem: [3],
+  vmoveto: [4],
+  rlineto: [5],
+  hlineto: [6],
+  vlineto: [7],
+  rrcurveto: [8],
+  callsubr: [10],
+  flex: [12, 35],
+  drop: [12, 18],
+  endchar: [14],
+  rmoveto: [21],
+  hmoveto: [22],
+  vhcurveto: [30],
+  hvcurveto: [31]
+};
+class Type1CharString {
+  width = 0;
+  lsb = 0;
+  flexing = false;
+  output = [];
+  stack = [];
+  tokens = 0;
+  convert(encoded, subrs, seacAnalysisEnabled, depth = 0) {
+    if (depth > MAX_SUBR_NESTING) {
+      return true;
+    }
+    const count = encoded.length;
+    let error = false;
+    let wx, sbx, subrNumber;
+    for (let i = 0; i < count; i++) {
+      if (++this.tokens > MAX_CHARSTRING_TOKENS || this.stack.length > MAX_STACK_SIZE) {
+        return true;
+      }
+      let value = encoded[i];
+      if (value < 32) {
+        if (value === 12) {
+          value = (value << 8) + encoded[++i];
+        }
+        switch (value) {
+          case 1:
+            if (!HINTING_ENABLED) {
               this.stack = [];
               break;
-
-            case 10:
+            }
+            error = this.executeCommand(2, COMMAND_MAP.hstem);
+            break;
+          case 3:
+            if (!HINTING_ENABLED) {
+              this.stack = [];
+              break;
+            }
+            error = this.executeCommand(2, COMMAND_MAP.vstem);
+            break;
+          case 4:
+            if (this.flexing) {
               if (this.stack.length < 1) {
                 error = true;
                 break;
               }
-
-              subrNumber = this.stack.pop();
-
-              if (!subrs[subrNumber]) {
-                error = true;
-                break;
-              }
-
-              error = this.convert(subrs[subrNumber], subrs, seacAnalysisEnabled);
+              const dy = this.stack.pop();
+              this.stack.push(0, dy);
               break;
-
-            case 11:
-              return error;
-
-            case 13:
-              if (this.stack.length < 2) {
-                error = true;
-                break;
-              }
-
-              wx = this.stack.pop();
-              sbx = this.stack.pop();
-              this.lsb = sbx;
-              this.width = wx;
-              this.stack.push(wx, sbx);
-              error = this.executeCommand(2, COMMAND_MAP.hmoveto);
-              break;
-
-            case 14:
-              this.output.push(COMMAND_MAP.endchar[0]);
-              break;
-
-            case 21:
-              if (this.flexing) {
-                break;
-              }
-
-              error = this.executeCommand(2, COMMAND_MAP.rmoveto);
-              break;
-
-            case 22:
-              if (this.flexing) {
-                this.stack.push(0);
-                break;
-              }
-
-              error = this.executeCommand(1, COMMAND_MAP.hmoveto);
-              break;
-
-            case 30:
-              error = this.executeCommand(4, COMMAND_MAP.vhcurveto);
-              break;
-
-            case 31:
-              error = this.executeCommand(4, COMMAND_MAP.hvcurveto);
-              break;
-
-            case (12 << 8) + 0:
-              this.stack = [];
-              break;
-
-            case (12 << 8) + 1:
-              if (!HINTING_ENABLED) {
-                this.stack = [];
-                break;
-              }
-
-              error = this.executeCommand(2, COMMAND_MAP.vstem);
-              break;
-
-            case (12 << 8) + 2:
-              if (!HINTING_ENABLED) {
-                this.stack = [];
-                break;
-              }
-
-              error = this.executeCommand(2, COMMAND_MAP.hstem);
-              break;
-
-            case (12 << 8) + 6:
-              if (seacAnalysisEnabled) {
-                this.seac = this.stack.splice(-4, 4);
-                error = this.executeCommand(0, COMMAND_MAP.endchar);
-              } else {
-                error = this.executeCommand(4, COMMAND_MAP.endchar);
-              }
-
-              break;
-
-            case (12 << 8) + 7:
-              if (this.stack.length < 4) {
-                error = true;
-                break;
-              }
-
-              this.stack.pop();
-              wx = this.stack.pop();
-              var sby = this.stack.pop();
-              sbx = this.stack.pop();
-              this.lsb = sbx;
-              this.width = wx;
-              this.stack.push(wx, sbx, sby);
-              error = this.executeCommand(3, COMMAND_MAP.rmoveto);
-              break;
-
-            case (12 << 8) + 12:
-              if (this.stack.length < 2) {
-                error = true;
-                break;
-              }
-
-              var num2 = this.stack.pop();
-              var num1 = this.stack.pop();
-              this.stack.push(num1 / num2);
-              break;
-
-            case (12 << 8) + 16:
-              if (this.stack.length < 2) {
-                error = true;
-                break;
-              }
-
-              subrNumber = this.stack.pop();
-              var numArgs = this.stack.pop();
-
-              if (subrNumber === 0 && numArgs === 3) {
-                var flexArgs = this.stack.splice(this.stack.length - 17, 17);
-                this.stack.push(flexArgs[2] + flexArgs[0], flexArgs[3] + flexArgs[1], flexArgs[4], flexArgs[5], flexArgs[6], flexArgs[7], flexArgs[8], flexArgs[9], flexArgs[10], flexArgs[11], flexArgs[12], flexArgs[13], flexArgs[14]);
-                error = this.executeCommand(13, COMMAND_MAP.flex, true);
-                this.flexing = false;
-                this.stack.push(flexArgs[15], flexArgs[16]);
-              } else if (subrNumber === 1 && numArgs === 0) {
-                this.flexing = true;
-              }
-
-              break;
-
-            case (12 << 8) + 17:
-              break;
-
-            case (12 << 8) + 33:
-              this.stack = [];
-              break;
-
-            default:
-              (0, _util.warn)('Unknown type 1 charstring command of "' + value + '"');
-              break;
-          }
-
-          if (error) {
+            }
+            error = this.executeCommand(1, COMMAND_MAP.vmoveto);
             break;
-          }
-
-          continue;
-        } else if (value <= 246) {
-          value = value - 139;
-        } else if (value <= 250) {
-          value = (value - 247) * 256 + encoded[++i] + 108;
-        } else if (value <= 254) {
-          value = -((value - 251) * 256) - encoded[++i] - 108;
-        } else {
-          value = (encoded[++i] & 0xff) << 24 | (encoded[++i] & 0xff) << 16 | (encoded[++i] & 0xff) << 8 | (encoded[++i] & 0xff) << 0;
+          case 5:
+            error = this.executeCommand(2, COMMAND_MAP.rlineto);
+            break;
+          case 6:
+            error = this.executeCommand(1, COMMAND_MAP.hlineto);
+            break;
+          case 7:
+            error = this.executeCommand(1, COMMAND_MAP.vlineto);
+            break;
+          case 8:
+            error = this.executeCommand(6, COMMAND_MAP.rrcurveto);
+            break;
+          case 9:
+            this.stack = [];
+            break;
+          case 10:
+            if (this.stack.length < 1) {
+              error = true;
+              break;
+            }
+            subrNumber = this.stack.pop();
+            if (!subrs[subrNumber]) {
+              error = true;
+              break;
+            }
+            error = this.convert(subrs[subrNumber], subrs, seacAnalysisEnabled, depth + 1);
+            break;
+          case 11:
+            return error;
+          case 13:
+            if (this.stack.length < 2) {
+              error = true;
+              break;
+            }
+            wx = this.stack.pop();
+            sbx = this.stack.pop();
+            this.lsb = sbx;
+            this.width = wx;
+            this.stack.push(wx, sbx);
+            error = this.executeCommand(2, COMMAND_MAP.hmoveto);
+            break;
+          case 14:
+            this.output.push(COMMAND_MAP.endchar[0]);
+            error = this.output.length > MAX_CHARSTRING_LENGTH;
+            break;
+          case 21:
+            if (this.flexing) {
+              break;
+            }
+            error = this.executeCommand(2, COMMAND_MAP.rmoveto);
+            break;
+          case 22:
+            if (this.flexing) {
+              this.stack.push(0);
+              break;
+            }
+            error = this.executeCommand(1, COMMAND_MAP.hmoveto);
+            break;
+          case 30:
+            error = this.executeCommand(4, COMMAND_MAP.vhcurveto);
+            break;
+          case 31:
+            error = this.executeCommand(4, COMMAND_MAP.hvcurveto);
+            break;
+          case (12 << 8) + 0:
+            this.stack = [];
+            break;
+          case (12 << 8) + 1:
+            if (!HINTING_ENABLED) {
+              this.stack = [];
+              break;
+            }
+            error = this.executeCommand(2, COMMAND_MAP.vstem);
+            break;
+          case (12 << 8) + 2:
+            if (!HINTING_ENABLED) {
+              this.stack = [];
+              break;
+            }
+            error = this.executeCommand(2, COMMAND_MAP.hstem);
+            break;
+          case (12 << 8) + 6:
+            if (seacAnalysisEnabled) {
+              const asb = this.stack.at(-5);
+              this.seac = this.stack.splice(-4, 4);
+              this.seac[0] += this.lsb - asb;
+              error = this.executeCommand(0, COMMAND_MAP.endchar);
+            } else {
+              error = this.executeCommand(4, COMMAND_MAP.endchar);
+            }
+            break;
+          case (12 << 8) + 7:
+            if (this.stack.length < 4) {
+              error = true;
+              break;
+            }
+            this.stack.pop();
+            wx = this.stack.pop();
+            const sby = this.stack.pop();
+            sbx = this.stack.pop();
+            this.lsb = sbx;
+            this.width = wx;
+            this.stack.push(wx, sbx, sby);
+            error = this.executeCommand(3, COMMAND_MAP.rmoveto);
+            break;
+          case (12 << 8) + 12:
+            if (this.stack.length < 2) {
+              error = true;
+              break;
+            }
+            const num2 = this.stack.pop();
+            const num1 = this.stack.pop();
+            this.stack.push(num1 / num2);
+            break;
+          case (12 << 8) + 16:
+            if (this.stack.length < 2) {
+              error = true;
+              break;
+            }
+            subrNumber = this.stack.pop();
+            const numArgs = this.stack.pop();
+            if (subrNumber === 0 && numArgs === 3) {
+              const flexArgs = this.stack.splice(-17, 17);
+              this.stack.push(flexArgs[2] + flexArgs[0], flexArgs[3] + flexArgs[1], flexArgs[4], flexArgs[5], flexArgs[6], flexArgs[7], flexArgs[8], flexArgs[9], flexArgs[10], flexArgs[11], flexArgs[12], flexArgs[13], flexArgs[14]);
+              error = this.executeCommand(13, COMMAND_MAP.flex, true);
+              this.flexing = false;
+              this.stack.push(flexArgs[15], flexArgs[16]);
+            } else if (subrNumber === 1 && numArgs === 0) {
+              this.flexing = true;
+            }
+            break;
+          case (12 << 8) + 17:
+            break;
+          case (12 << 8) + 33:
+            this.stack = [];
+            break;
+          default:
+            warn('Unknown type 1 charstring command of "' + value + '"');
+            break;
         }
-
-        this.stack.push(value);
-      }
-
-      return error;
-    },
-
-    executeCommand(howManyArgs, command, keepStack) {
-      var stackLength = this.stack.length;
-
-      if (howManyArgs > stackLength) {
-        return true;
-      }
-
-      var start = stackLength - howManyArgs;
-
-      for (var i = start; i < stackLength; i++) {
-        var value = this.stack[i];
-
-        if (Number.isInteger(value)) {
-          this.output.push(28, value >> 8 & 0xff, value & 0xff);
-        } else {
-          value = 65536 * value | 0;
-          this.output.push(255, value >> 24 & 0xff, value >> 16 & 0xff, value >> 8 & 0xff, value & 0xff);
+        if (error) {
+          break;
         }
-      }
-
-      this.output.push.apply(this.output, command);
-
-      if (keepStack) {
-        this.stack.splice(start, howManyArgs);
-      } else {
-        this.stack.length = 0;
-      }
-
-      return false;
-    }
-
-  };
-  return Type1CharString;
-}();
-
-var Type1Parser = function Type1ParserClosure() {
-  var EEXEC_ENCRYPT_KEY = 55665;
-  var CHAR_STRS_ENCRYPT_KEY = 4330;
-
-  function isHexDigit(code) {
-    return code >= 48 && code <= 57 || code >= 65 && code <= 70 || code >= 97 && code <= 102;
-  }
-
-  function decrypt(data, key, discardNumber) {
-    if (discardNumber >= data.length) {
-      return new Uint8Array(0);
-    }
-
-    var r = key | 0,
-        c1 = 52845,
-        c2 = 22719,
-        i,
-        j;
-
-    for (i = 0; i < discardNumber; i++) {
-      r = (data[i] + r) * c1 + c2 & (1 << 16) - 1;
-    }
-
-    var count = data.length - discardNumber;
-    var decrypted = new Uint8Array(count);
-
-    for (i = discardNumber, j = 0; j < count; i++, j++) {
-      var value = data[i];
-      decrypted[j] = value ^ r >> 8;
-      r = (value + r) * c1 + c2 & (1 << 16) - 1;
-    }
-
-    return decrypted;
-  }
-
-  function decryptAscii(data, key, discardNumber) {
-    var r = key | 0,
-        c1 = 52845,
-        c2 = 22719;
-    var count = data.length,
-        maybeLength = count >>> 1;
-    var decrypted = new Uint8Array(maybeLength);
-    var i, j;
-
-    for (i = 0, j = 0; i < count; i++) {
-      var digit1 = data[i];
-
-      if (!isHexDigit(digit1)) {
         continue;
+      } else if (value <= 246) {
+        value -= 139;
+      } else if (value <= 250) {
+        value = (value - 247) * 256 + encoded[++i] + 108;
+      } else if (value <= 254) {
+        value = -((value - 251) * 256) - encoded[++i] - 108;
+      } else {
+        value = (encoded[++i] & 0xff) << 24 | (encoded[++i] & 0xff) << 16 | (encoded[++i] & 0xff) << 8 | (encoded[++i] & 0xff) << 0;
       }
-
-      i++;
-      var digit2;
-
-      while (i < count && !isHexDigit(digit2 = data[i])) {
-        i++;
-      }
-
-      if (i < count) {
-        var value = parseInt(String.fromCharCode(digit1, digit2), 16);
-        decrypted[j++] = value ^ r >> 8;
-        r = (value + r) * c1 + c2 & (1 << 16) - 1;
+      this.stack.push(value);
+    }
+    return error;
+  }
+  executeCommand(howManyArgs, command, keepStack) {
+    const stackLength = this.stack.length;
+    if (howManyArgs > stackLength) {
+      return true;
+    }
+    const start = stackLength - howManyArgs;
+    for (let i = start; i < stackLength; i++) {
+      let value = this.stack[i];
+      if (Number.isInteger(value)) {
+        this.output.push(28, value >> 8 & 0xff, value & 0xff);
+      } else {
+        value = 65536 * value | 0;
+        this.output.push(255, value >> 24 & 0xff, value >> 16 & 0xff, value >> 8 & 0xff, value & 0xff);
       }
     }
-
-    return Array.prototype.slice.call(decrypted, discardNumber, j);
+    this.output.push(...command);
+    if (keepStack) {
+      this.stack.splice(start, howManyArgs);
+    } else {
+      this.stack.length = 0;
+    }
+    return this.output.length > MAX_CHARSTRING_LENGTH;
   }
-
-  function isSpecial(c) {
-    return c === 0x2f || c === 0x5b || c === 0x5d || c === 0x7b || c === 0x7d || c === 0x28 || c === 0x29;
+}
+const EEXEC_ENCRYPT_KEY = 55665;
+const CHAR_STRS_ENCRYPT_KEY = 4330;
+function isHexDigit(code) {
+  return code >= 48 && code <= 57 || code >= 65 && code <= 70 || code >= 97 && code <= 102;
+}
+function decrypt(data, key, discardNumber) {
+  if (discardNumber >= data.length) {
+    return new Uint8Array(0);
   }
-
-  function Type1Parser(stream, encrypted, seacAnalysisEnabled) {
+  const c1 = 52845,
+    c2 = 22719;
+  let r = key | 0,
+    i,
+    j;
+  for (i = 0; i < discardNumber; i++) {
+    r = (data[i] + r) * c1 + c2 & (1 << 16) - 1;
+  }
+  const count = data.length - discardNumber;
+  const decrypted = new Uint8Array(count);
+  for (i = discardNumber, j = 0; j < count; i++, j++) {
+    const value = data[i];
+    decrypted[j] = value ^ r >> 8;
+    r = (value + r) * c1 + c2 & (1 << 16) - 1;
+  }
+  return decrypted;
+}
+function decryptAscii(data, key, discardNumber) {
+  const c1 = 52845,
+    c2 = 22719;
+  let r = key | 0;
+  const count = data.length,
+    maybeLength = count >>> 1;
+  const decrypted = new Uint8Array(maybeLength);
+  let digit1 = -1;
+  let i, j;
+  for (i = 0, j = 0; i < count; i++) {
+    const digit = toHexDigit(data[i]);
+    if (digit < 0) {
+      continue;
+    }
+    if (digit1 < 0) {
+      digit1 = digit;
+      continue;
+    }
+    const value = digit1 << 4 | digit;
+    digit1 = -1;
+    decrypted[j++] = value ^ r >> 8;
+    r = (value + r) * c1 + c2 & (1 << 16) - 1;
+  }
+  return decrypted.slice(discardNumber, j);
+}
+function isSpecial(c) {
+  return c === 0x2f || c === 0x5b || c === 0x5d || c === 0x7b || c === 0x7d || c === 0x28 || c === 0x29;
+}
+class Type1Parser {
+  constructor(stream, encrypted, seacAnalysisEnabled) {
     if (encrypted) {
-      var data = stream.getBytes();
-      var isBinary = !(isHexDigit(data[0]) && isHexDigit(data[1]) && isHexDigit(data[2]) && isHexDigit(data[3]));
-      stream = new _stream.Stream(isBinary ? decrypt(data, EEXEC_ENCRYPT_KEY, 4) : decryptAscii(data, EEXEC_ENCRYPT_KEY, 4));
+      const data = stream.getBytes();
+      const isBinary = !((isHexDigit(data[0]) || isWhiteSpace(data[0])) && isHexDigit(data[1]) && isHexDigit(data[2]) && isHexDigit(data[3]) && isHexDigit(data[4]) && isHexDigit(data[5]) && isHexDigit(data[6]) && isHexDigit(data[7]));
+      stream = new Stream(isBinary ? decrypt(data, EEXEC_ENCRYPT_KEY, 4) : decryptAscii(data, EEXEC_ENCRYPT_KEY, 4));
     }
-
     this.seacAnalysisEnabled = !!seacAnalysisEnabled;
     this.stream = stream;
     this.nextChar();
   }
-
-  Type1Parser.prototype = {
-    readNumberArray: function Type1Parser_readNumberArray() {
-      this.getToken();
-      var array = [];
-
-      while (true) {
-        var token = this.getToken();
-
-        if (token === null || token === "]" || token === "}") {
-          break;
-        }
-
-        array.push(parseFloat(token || 0));
+  readNumberArray() {
+    this.getToken();
+    const array = [];
+    while (true) {
+      const token = this.getToken();
+      if (token === null || token === "]" || token === "}") {
+        break;
       }
-
-      return array;
-    },
-    readNumber: function Type1Parser_readNumber() {
-      var token = this.getToken();
-      return parseFloat(token || 0);
-    },
-    readInt: function Type1Parser_readInt() {
-      var token = this.getToken();
-      return parseInt(token || 0, 10) | 0;
-    },
-    readBoolean: function Type1Parser_readBoolean() {
-      var token = this.getToken();
-      return token === "true" ? 1 : 0;
-    },
-    nextChar: function Type1_nextChar() {
-      return this.currentChar = this.stream.getByte();
-    },
-    getToken: function Type1Parser_getToken() {
-      var comment = false;
-      var ch = this.currentChar;
-
-      while (true) {
-        if (ch === -1) {
-          return null;
+      array.push(parseFloat(token || 0));
+    }
+    return array;
+  }
+  readNumber() {
+    const token = this.getToken();
+    return parseFloat(token || 0);
+  }
+  readInt() {
+    const token = this.getToken();
+    return parseInt(token || 0, 10) | 0;
+  }
+  readBoolean() {
+    const token = this.getToken();
+    return token === "true" ? 1 : 0;
+  }
+  nextChar() {
+    return this.currentChar = this.stream.getByte();
+  }
+  prevChar() {
+    this.stream.skip(-2);
+    return this.currentChar = this.stream.getByte();
+  }
+  getToken() {
+    let comment = false;
+    let ch = this.currentChar;
+    while (true) {
+      if (ch === -1) {
+        return null;
+      }
+      if (comment) {
+        if (ch === 0x0a || ch === 0x0d) {
+          comment = false;
         }
-
-        if (comment) {
-          if (ch === 0x0a || ch === 0x0d) {
-            comment = false;
+      } else if (ch === 0x25) {
+        comment = true;
+      } else if (!isWhiteSpace(ch)) {
+        break;
+      }
+      ch = this.nextChar();
+    }
+    if (isSpecial(ch)) {
+      this.nextChar();
+      return String.fromCharCode(ch);
+    }
+    let token = "";
+    do {
+      token += String.fromCharCode(ch);
+      ch = this.nextChar();
+    } while (ch >= 0 && !isWhiteSpace(ch) && !isSpecial(ch));
+    return token;
+  }
+  readCharStrings(bytes, lenIV) {
+    if (lenIV === -1) {
+      return bytes;
+    }
+    return decrypt(bytes, CHAR_STRS_ENCRYPT_KEY, lenIV);
+  }
+  extractFontProgram(properties) {
+    const stream = this.stream;
+    const subrs = [],
+      charstrings = [];
+    const privateData = new Map([["lenIV", 4]]);
+    const program = {
+      subrs: [],
+      charstrings: [],
+      properties: {
+        privateData
+      }
+    };
+    let token, length, data;
+    let subrsParsed = false;
+    let charStringsParsed = false;
+    while ((token = this.getToken()) !== null) {
+      if (token !== "/") {
+        continue;
+      }
+      token = this.getToken();
+      switch (token) {
+        case "CharStrings":
+          if (charStringsParsed) {
+            break;
           }
-        } else if (ch === 0x25) {
-          comment = true;
-        } else if (!(0, _core_utils.isWhiteSpace)(ch)) {
+          charStringsParsed = true;
+          this.getToken();
+          this.getToken();
+          this.getToken();
+          this.getToken();
+          while (true) {
+            token = this.getToken();
+            if (token === null || token === "end") {
+              break;
+            }
+            if (token !== "/") {
+              continue;
+            }
+            const glyph = this.getToken();
+            length = this.readInt();
+            this.getToken();
+            data = length > 0 ? stream.getBytes(length) : new Uint8Array(0);
+            const encoded = this.readCharStrings(data, privateData.get("lenIV"));
+            this.nextChar();
+            token = this.getToken();
+            if (token === "noaccess") {
+              this.getToken();
+            } else if (token === "/") {
+              this.prevChar();
+            }
+            charstrings.push({
+              glyph,
+              encoded
+            });
+          }
           break;
-        }
-
-        ch = this.nextChar();
+        case "Subrs":
+          if (subrsParsed) {
+            break;
+          }
+          subrsParsed = true;
+          this.readInt();
+          this.getToken();
+          while (this.getToken() === "dup") {
+            const index = this.readInt();
+            length = this.readInt();
+            this.getToken();
+            data = length > 0 ? stream.getBytes(length) : new Uint8Array(0);
+            const encoded = this.readCharStrings(data, privateData.get("lenIV"));
+            this.nextChar();
+            token = this.getToken();
+            if (token === "noaccess") {
+              this.getToken();
+            }
+            subrs[index] = encoded;
+          }
+          break;
+        case "BlueValues":
+        case "OtherBlues":
+        case "FamilyBlues":
+        case "FamilyOtherBlues":
+          const blueArray = this.readNumberArray();
+          if (HINTING_ENABLED && blueArray.length > 0 && blueArray.length % 2 === 0) {
+            privateData.set(token, blueArray);
+          }
+          break;
+        case "StemSnapH":
+        case "StemSnapV":
+          privateData.set(token, this.readNumberArray());
+          break;
+        case "StdHW":
+        case "StdVW":
+          privateData.set(token, this.readNumberArray()[0]);
+          break;
+        case "BlueShift":
+        case "lenIV":
+        case "BlueFuzz":
+        case "BlueScale":
+        case "LanguageGroup":
+          privateData.set(token, this.readNumber());
+          break;
+        case "ExpansionFactor":
+          privateData.set(token, this.readNumber() || 0.06);
+          break;
+        case "ForceBold":
+          privateData.set(token, this.readBoolean());
+          break;
       }
-
-      if (isSpecial(ch)) {
-        this.nextChar();
-        return String.fromCharCode(ch);
-      }
-
-      var token = "";
-
-      do {
-        token += String.fromCharCode(ch);
-        ch = this.nextChar();
-      } while (ch >= 0 && !(0, _core_utils.isWhiteSpace)(ch) && !isSpecial(ch));
-
-      return token;
-    },
-    readCharStrings: function Type1Parser_readCharStrings(bytes, lenIV) {
-      if (lenIV === -1) {
-        return bytes;
-      }
-
-      return decrypt(bytes, CHAR_STRS_ENCRYPT_KEY, lenIV);
-    },
-    extractFontProgram: function Type1Parser_extractFontProgram(properties) {
-      var stream = this.stream;
-      var subrs = [],
-          charstrings = [];
-      var privateData = Object.create(null);
-      privateData["lenIV"] = 4;
-      var program = {
-        subrs: [],
-        charstrings: [],
-        properties: {
-          privateData
-        }
+    }
+    for (const {
+      encoded,
+      glyph
+    } of charstrings) {
+      const charString = new Type1CharString();
+      const error = charString.convert(encoded, subrs, this.seacAnalysisEnabled);
+      const output = !error ? charString.output : [14];
+      const charStringObject = {
+        glyphName: glyph,
+        charstring: output,
+        width: charString.width,
+        lsb: charString.lsb,
+        seac: charString.seac
       };
-      var token, length, data, lenIV, encoded;
-
-      while ((token = this.getToken()) !== null) {
-        if (token !== "/") {
-          continue;
-        }
-
-        token = this.getToken();
-
-        switch (token) {
-          case "CharStrings":
-            this.getToken();
-            this.getToken();
-            this.getToken();
-            this.getToken();
-
-            while (true) {
-              token = this.getToken();
-
-              if (token === null || token === "end") {
-                break;
-              }
-
-              if (token !== "/") {
-                continue;
-              }
-
-              var glyph = this.getToken();
-              length = this.readInt();
-              this.getToken();
-              data = length > 0 ? stream.getBytes(length) : new Uint8Array(0);
-              lenIV = program.properties.privateData["lenIV"];
-              encoded = this.readCharStrings(data, lenIV);
-              this.nextChar();
-              token = this.getToken();
-
-              if (token === "noaccess") {
-                this.getToken();
-              }
-
-              charstrings.push({
-                glyph,
-                encoded
-              });
-            }
-
-            break;
-
-          case "Subrs":
-            this.readInt();
-            this.getToken();
-
-            while (this.getToken() === "dup") {
-              var index = this.readInt();
-              length = this.readInt();
-              this.getToken();
-              data = length > 0 ? stream.getBytes(length) : new Uint8Array(0);
-              lenIV = program.properties.privateData["lenIV"];
-              encoded = this.readCharStrings(data, lenIV);
-              this.nextChar();
-              token = this.getToken();
-
-              if (token === "noaccess") {
-                this.getToken();
-              }
-
-              subrs[index] = encoded;
-            }
-
-            break;
-
-          case "BlueValues":
-          case "OtherBlues":
-          case "FamilyBlues":
-          case "FamilyOtherBlues":
-            var blueArray = this.readNumberArray();
-
-            if (blueArray.length > 0 && blueArray.length % 2 === 0 && HINTING_ENABLED) {
-              program.properties.privateData[token] = blueArray;
-            }
-
-            break;
-
-          case "StemSnapH":
-          case "StemSnapV":
-            program.properties.privateData[token] = this.readNumberArray();
-            break;
-
-          case "StdHW":
-          case "StdVW":
-            program.properties.privateData[token] = this.readNumberArray()[0];
-            break;
-
-          case "BlueShift":
-          case "lenIV":
-          case "BlueFuzz":
-          case "BlueScale":
-          case "LanguageGroup":
-          case "ExpansionFactor":
-            program.properties.privateData[token] = this.readNumber();
-            break;
-
-          case "ForceBold":
-            program.properties.privateData[token] = this.readBoolean();
-            break;
-        }
+      if (glyph === ".notdef") {
+        program.charstrings.unshift(charStringObject);
+      } else {
+        program.charstrings.push(charStringObject);
       }
-
-      for (var i = 0; i < charstrings.length; i++) {
-        glyph = charstrings[i].glyph;
-        encoded = charstrings[i].encoded;
-        var charString = new Type1CharString();
-        var error = charString.convert(encoded, subrs, this.seacAnalysisEnabled);
-        var output = charString.output;
-
-        if (error) {
-          output = [14];
-        }
-
-        const charStringObject = {
-          glyphName: glyph,
-          charstring: output,
-          width: charString.width,
-          lsb: charString.lsb,
-          seac: charString.seac
-        };
-
-        if (glyph === ".notdef") {
-          program.charstrings.unshift(charStringObject);
-        } else {
-          program.charstrings.push(charStringObject);
-        }
-
-        if (properties.builtInEncoding) {
-          const index = properties.builtInEncoding.indexOf(glyph);
-
-          if (index > -1 && properties.widths[index] === undefined && index >= properties.firstChar && index <= properties.lastChar) {
-            properties.widths[index] = charString.width;
-          }
-        }
-      }
-
-      return program;
-    },
-    extractFontHeader: function Type1Parser_extractFontHeader(properties) {
-      var token;
-
-      while ((token = this.getToken()) !== null) {
-        if (token !== "/") {
-          continue;
-        }
-
-        token = this.getToken();
-
-        switch (token) {
-          case "FontMatrix":
-            var matrix = this.readNumberArray();
-            properties.fontMatrix = matrix;
-            break;
-
-          case "Encoding":
-            var encodingArg = this.getToken();
-            var encoding;
-
-            if (!/^\d+$/.test(encodingArg)) {
-              encoding = (0, _encodings.getEncoding)(encodingArg);
-            } else {
-              encoding = [];
-              var size = parseInt(encodingArg, 10) | 0;
-              this.getToken();
-
-              for (var j = 0; j < size; j++) {
-                token = this.getToken();
-
-                while (token !== "dup" && token !== "def") {
-                  token = this.getToken();
-
-                  if (token === null) {
-                    return;
-                  }
-                }
-
-                if (token === "def") {
-                  break;
-                }
-
-                var index = this.readInt();
-                this.getToken();
-                var glyph = this.getToken();
-                encoding[index] = glyph;
-                this.getToken();
-              }
-            }
-
-            properties.builtInEncoding = encoding;
-            break;
-
-          case "FontBBox":
-            var fontBBox = this.readNumberArray();
-            properties.ascent = Math.max(fontBBox[3], fontBBox[1]);
-            properties.descent = Math.min(fontBBox[1], fontBBox[3]);
-            properties.ascentScaled = true;
-            break;
+      if (properties.builtInEncoding) {
+        const index = properties.builtInEncoding.indexOf(glyph);
+        if (index > -1 && properties.widths[index] === undefined && index >= properties.firstChar && index <= properties.lastChar) {
+          properties.widths[index] = charString.width;
         }
       }
     }
-  };
-  return Type1Parser;
-}();
-
-exports.Type1Parser = Type1Parser;
+    return program;
+  }
+  extractCidKeyedFontProgram(properties) {
+    const stream = this.stream;
+    const privateData = new Map([["lenIV", 4]]);
+    const program = {
+      subrs: [],
+      charstrings: [],
+      properties: {
+        privateData
+      }
+    };
+    let cidCount = 0;
+    let cidMapOffset = -1;
+    let fdBytes = 1;
+    let gdBytes = 0;
+    let subrMapOffset = -1;
+    let sdBytes = 0;
+    let subrCount = 0;
+    let startDataLength = 0;
+    let startDataIsHex = false;
+    let foundStartData = false;
+    const previousTokens = [];
+    function rememberToken(value) {
+      previousTokens.push(value);
+      if (previousTokens.length > 4) {
+        previousTokens.shift();
+      }
+    }
+    let token;
+    while ((token = this.getToken()) !== null) {
+      if (token === "StartData") {
+        const dataType = previousTokens.at(-3);
+        const dataLength = previousTokens.at(-1);
+        if (previousTokens.at(-4) !== "(" || previousTokens.at(-2) !== ")" || dataType !== "Binary" && dataType !== "Hex" || !/^\d+$/.test(dataLength)) {
+          return null;
+        }
+        startDataLength = parseInt(dataLength, 10);
+        if (startDataLength <= 0) {
+          return null;
+        }
+        startDataIsHex = dataType === "Hex";
+        foundStartData = true;
+        break;
+      }
+      rememberToken(token);
+      if (token !== "/") {
+        continue;
+      }
+      token = this.getToken();
+      rememberToken(token);
+      switch (token) {
+        case "FontMatrix":
+          properties.fontMatrix = this.readNumberArray();
+          break;
+        case "FontBBox":
+          const fontBBox = this.readNumberArray();
+          properties.ascent = Math.max(fontBBox[3], fontBBox[1]);
+          properties.descent = Math.min(fontBBox[1], fontBBox[3]);
+          properties.ascentScaled = true;
+          break;
+        case "CIDCount":
+          cidCount = this.readInt();
+          break;
+        case "CIDMapOffset":
+          cidMapOffset = this.readInt();
+          break;
+        case "FDBytes":
+          fdBytes = this.readInt();
+          break;
+        case "GDBytes":
+          gdBytes = this.readInt();
+          break;
+        case "SubrMapOffset":
+          subrMapOffset = this.readInt();
+          break;
+        case "SDBytes":
+          sdBytes = this.readInt();
+          break;
+        case "SubrCount":
+          subrCount = this.readInt();
+          break;
+        case "BlueValues":
+        case "OtherBlues":
+        case "FamilyBlues":
+        case "FamilyOtherBlues":
+          this.readNumberArray();
+          break;
+        case "StemSnapH":
+        case "StemSnapV":
+          privateData.set(token, this.readNumberArray());
+          break;
+        case "StdHW":
+        case "StdVW":
+          privateData.set(token, this.readNumberArray()[0]);
+          break;
+        case "BlueShift":
+        case "lenIV":
+        case "BlueFuzz":
+        case "BlueScale":
+        case "LanguageGroup":
+          privateData.set(token, this.readNumber());
+          break;
+        case "ExpansionFactor":
+          privateData.set(token, this.readNumber() || 0.06);
+          break;
+        case "ForceBold":
+          privateData.set(token, this.readBoolean());
+          break;
+      }
+    }
+    if (!foundStartData || cidCount <= 0 || cidMapOffset < 0 || fdBytes < 0 || fdBytes > 4 || gdBytes < 1 || gdBytes > 4) {
+      return null;
+    }
+    const maxLength = stream.end - stream.pos;
+    if (startDataLength > maxLength) {
+      if (!startDataIsHex) {
+        startDataLength = maxLength;
+      } else if (startDataLength > 2 * maxLength) {
+        return null;
+      }
+    }
+    let binary = stream.getBytes(startDataIsHex ? undefined : startDataLength);
+    if (startDataIsHex) {
+      const decoded = new Uint8Array(startDataLength);
+      let digit1 = -1,
+        j = 0;
+      for (let i = 0, ii = binary.length; i < ii && j < startDataLength; i++) {
+        const digit = toHexDigit(binary[i]);
+        if (digit < 0) {
+          continue;
+        }
+        if (digit1 < 0) {
+          digit1 = digit;
+          continue;
+        }
+        decoded[j++] = digit1 << 4 | digit;
+        digit1 = -1;
+      }
+      if (j !== startDataLength) {
+        return null;
+      }
+      binary = decoded;
+    }
+    const lenIV = privateData.get("lenIV");
+    const cidEntrySize = fdBytes + gdBytes;
+    const subrs = [];
+    function readUint(offset, byteCount) {
+      let n = 0;
+      for (let i = 0; i < byteCount; i++) {
+        n = n << 8 | binary[offset + i];
+      }
+      return n >>> 0;
+    }
+    if (cidMapOffset + (cidCount + 1) * cidEntrySize > binary.length || subrCount > 0 && (subrMapOffset < 0 || sdBytes < 1 || sdBytes > 4 || subrMapOffset + (subrCount + 1) * sdBytes > binary.length)) {
+      return null;
+    }
+    if (fdBytes > 0) {
+      for (let cid = 0; cid < cidCount; cid++) {
+        if (readUint(cidMapOffset + cid * cidEntrySize, fdBytes) !== 0) {
+          return null;
+        }
+      }
+    }
+    if (subrCount > 0) {
+      const subrOffsets = new Array(subrCount + 1);
+      for (let i = 0; i <= subrCount; i++) {
+        subrOffsets[i] = readUint(subrMapOffset + i * sdBytes, sdBytes);
+      }
+      for (let i = 0; i < subrCount; i++) {
+        const start = subrOffsets[i];
+        const end = subrOffsets[i + 1];
+        if (end > binary.length || end < start) {
+          subrs[i] = new Uint8Array(0);
+          continue;
+        }
+        subrs[i] = this.readCharStrings(binary.subarray(start, end), lenIV);
+      }
+    }
+    const charstrings = [];
+    let prevOffset = readUint(cidMapOffset + fdBytes, gdBytes);
+    for (let cid = 0; cid < cidCount; cid++) {
+      const nextOffset = readUint(cidMapOffset + (cid + 1) * cidEntrySize + fdBytes, gdBytes);
+      const glyphName = cid === 0 ? ".notdef" : `cid${cid}`;
+      if (nextOffset > prevOffset && nextOffset <= binary.length) {
+        const encoded = this.readCharStrings(binary.subarray(prevOffset, nextOffset), lenIV);
+        const charString = new Type1CharString();
+        const error = charString.convert(encoded, subrs, this.seacAnalysisEnabled);
+        charstrings.push({
+          glyphName,
+          charstring: error ? [14] : charString.output,
+          width: charString.width,
+          lsb: charString.lsb,
+          seac: charString.seac
+        });
+      } else {
+        const notDef = charstrings[0];
+        charstrings.push({
+          glyphName,
+          charstring: notDef?.charstring.slice() || [0x8b, 0x0e],
+          width: notDef?.width || 0,
+          lsb: notDef?.lsb || 0
+        });
+      }
+      prevOffset = nextOffset;
+    }
+    program.subrs = subrs;
+    program.charstrings = charstrings;
+    return program;
+  }
+  extractFontHeader(properties) {
+    let token;
+    while ((token = this.getToken()) !== null) {
+      if (token !== "/") {
+        continue;
+      }
+      token = this.getToken();
+      switch (token) {
+        case "FontMatrix":
+          const matrix = this.readNumberArray();
+          properties.fontMatrix = matrix;
+          break;
+        case "Encoding":
+          const encodingArg = this.getToken();
+          let encoding;
+          if (!/^\d+$/.test(encodingArg)) {
+            encoding = getEncoding(encodingArg);
+          } else {
+            encoding = [];
+            const size = parseInt(encodingArg, 10) | 0;
+            this.getToken();
+            for (let j = 0; j < size; j++) {
+              token = this.getToken();
+              while (token !== "dup" && token !== "def") {
+                token = this.getToken();
+                if (token === null) {
+                  return;
+                }
+              }
+              if (token === "def") {
+                break;
+              }
+              const index = this.readInt();
+              this.getToken();
+              const glyph = this.getToken();
+              encoding[index] = glyph;
+              this.getToken();
+            }
+          }
+          properties.builtInEncoding = encoding;
+          break;
+        case "FontBBox":
+          const fontBBox = this.readNumberArray();
+          properties.ascent = Math.max(fontBBox[3], fontBBox[1]);
+          properties.descent = Math.min(fontBBox[1], fontBBox[3]);
+          properties.ascentScaled = true;
+          break;
+      }
+    }
+  }
+}
+export { Type1Parser };

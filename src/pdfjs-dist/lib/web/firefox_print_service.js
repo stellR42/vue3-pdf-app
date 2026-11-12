@@ -1,8 +1,4 @@
-/**
- * @licstart The following is the entire license notice for the
- * Javascript code in this page
- *
- * Copyright 2020 Mozilla Foundation
+/* Copyright 2024 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,105 +11,143 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
- * @licend The above is the entire license notice for the
- * Javascript code in this page
  */
-"use strict";
-
-Object.defineProperty(exports, "__esModule", {
-  value: true
-});
-exports.FirefoxPrintService = FirefoxPrintService;
-
-var _app_options = require("./app_options.js");
-
-var _ui_utils = require("./ui_utils.js");
-
-var _app = require("./app.js");
-
-var _pdf = require("../pdf");
-
-function composePage(pdfDocument, pageNumber, size, printContainer) {
+import "core-js/modules/es.array.push.js";
+import "core-js/modules/es.iterator.constructor.js";
+import "core-js/modules/es.iterator.every.js";
+import "core-js/modules/es.iterator.filter.js";
+import { AnnotationMode, PixelsPerInch, RenderingCancelledException, shadow } from "../pdf.js";
+import { BasePrintServiceFactory, getXfaHtmlForPrinting } from "./print_utils.js";
+import { AppOptions } from "./app_options.js";
+function composePage(pdfDocument, pageNumber, size, printContainer, printResolution, shouldPostMessageAfterPrintCallback, optionalContentConfigPromise, printAnnotationStoragePromise) {
   const canvas = document.createElement("canvas");
-  const PRINT_RESOLUTION = _app_options.AppOptions.get("printResolution") || 150;
-  const PRINT_UNITS = PRINT_RESOLUTION / 72.0;
+  const PRINT_UNITS = printResolution / PixelsPerInch.PDF;
   canvas.width = Math.floor(size.width * PRINT_UNITS);
   canvas.height = Math.floor(size.height * PRINT_UNITS);
-  canvas.style.width = Math.floor(size.width * _ui_utils.CSS_UNITS) + "px";
-  canvas.style.height = Math.floor(size.height * _ui_utils.CSS_UNITS) + "px";
   const canvasWrapper = document.createElement("div");
-  canvasWrapper.appendChild(canvas);
-  printContainer.appendChild(canvasWrapper);
-
+  canvasWrapper.className = "printedPage";
+  canvasWrapper.append(canvas);
+  printContainer.append(canvasWrapper);
+  let currentRenderTask = null;
   canvas.mozPrintCallback = function (obj) {
     const ctx = obj.context;
     ctx.save();
     ctx.fillStyle = "rgb(255, 255, 255)";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.restore();
-    pdfDocument.getPage(pageNumber).then(function (pdfPage) {
+    let thisRenderTask = null;
+    Promise.all([pdfDocument.getPage(pageNumber), printAnnotationStoragePromise]).then(function ([pdfPage, printAnnotationStorage]) {
+      if (currentRenderTask) {
+        currentRenderTask.cancel();
+        currentRenderTask = null;
+      }
       const renderContext = {
         canvasContext: ctx,
+        canvas: null,
         transform: [PRINT_UNITS, 0, 0, PRINT_UNITS, 0, 0],
         viewport: pdfPage.getViewport({
           scale: 1,
           rotation: size.rotation
         }),
-        intent: "print"
+        intent: "print",
+        annotationMode: AnnotationMode.ENABLE_STORAGE,
+        optionalContentConfigPromise,
+        printAnnotationStorage
       };
-      return pdfPage.render(renderContext).promise;
+      currentRenderTask = thisRenderTask = pdfPage.render(renderContext);
+      return thisRenderTask.promise;
     }).then(function () {
+      if (currentRenderTask === thisRenderTask) {
+        currentRenderTask = null;
+      }
       obj.done();
-    }, function (error) {
-      console.error(error);
-
+      if (shouldPostMessageAfterPrintCallback) {
+        window.postMessage("ready", "*");
+      }
+    }, function (reason) {
+      if (!(reason instanceof RenderingCancelledException)) {
+        console.error(reason);
+      }
+      if (currentRenderTask === thisRenderTask) {
+        currentRenderTask.cancel();
+        currentRenderTask = null;
+      }
       if ("abort" in obj) {
         obj.abort();
       } else {
         obj.done();
       }
+      if (shouldPostMessageAfterPrintCallback) {
+        window.postMessage("error", "*");
+      }
     });
   };
 }
-
-function FirefoxPrintService(pdfDocument, pagesOverview, printContainer) {
-  this.pdfDocument = pdfDocument;
-  this.pagesOverview = pagesOverview;
-  this.printContainer = printContainer;
-}
-
-FirefoxPrintService.prototype = {
+class FirefoxPrintService {
+  constructor({
+    pdfDocument,
+    pagesOverview,
+    printContainer,
+    printResolution,
+    printAnnotationStoragePromise = null
+  }) {
+    this.pdfDocument = pdfDocument;
+    this.pagesOverview = pagesOverview;
+    this.printContainer = printContainer;
+    this._printResolution = printResolution || 150;
+    this._optionalContentConfigPromise = pdfDocument.getOptionalContentConfig({
+      intent: "print"
+    });
+    this._printAnnotationStoragePromise = printAnnotationStoragePromise || Promise.resolve();
+  }
   layout() {
     const {
       pdfDocument,
       pagesOverview,
-      printContainer
+      printContainer,
+      _printResolution,
+      _optionalContentConfigPromise,
+      _printAnnotationStoragePromise
     } = this;
     const body = document.querySelector("body");
     body.setAttribute("data-pdfjsprinting", true);
-
-    for (let i = 0, ii = pagesOverview.length; i < ii; ++i) {
-      composePage(pdfDocument, i + 1, pagesOverview[i], printContainer);
+    const {
+      width,
+      height
+    } = this.pagesOverview[0];
+    const hasEqualPageSizes = this.pagesOverview.every(size => size.width === width && size.height === height);
+    if (!hasEqualPageSizes) {
+      console.warn("Not all pages have the same size. The printed result may be incorrect!");
     }
-  },
-
+    this.pageStyleSheet = new CSSStyleSheet();
+    this.pageStyleSheet.replaceSync(`@page { size: ${width}pt ${height}pt;}`);
+    document.adoptedStyleSheets.push(this.pageStyleSheet);
+    if (pdfDocument.isPureXfa) {
+      getXfaHtmlForPrinting(printContainer, pdfDocument);
+      return;
+    }
+    const shouldPostMessageAfterPrintCallback = AppOptions.get("postMessageAfterPrintCallback");
+    for (let i = 0, ii = pagesOverview.length; i < ii; ++i) {
+      composePage(pdfDocument, i + 1, pagesOverview[i], printContainer, _printResolution, shouldPostMessageAfterPrintCallback, _optionalContentConfigPromise, _printAnnotationStoragePromise);
+    }
+  }
   destroy() {
     this.printContainer.textContent = "";
     const body = document.querySelector("body");
     body.removeAttribute("data-pdfjsprinting");
+    if (this.pageStyleSheet) {
+      document.adoptedStyleSheets = document.adoptedStyleSheets.filter(styleSheet => styleSheet !== this.pageStyleSheet);
+      this.pageStyleSheet = null;
+    }
   }
-
-};
-_app.PDFPrintServiceFactory.instance = {
-  get supportsPrinting() {
+}
+class PDFPrintServiceFactory extends BasePrintServiceFactory {
+  static get supportsPrinting() {
     const canvas = document.createElement("canvas");
-    const value = "mozPrintCallback" in canvas;
-    return (0, _pdf.shadow)(this, "supportsPrinting", value);
-  },
-
-  createPrintService(pdfDocument, pagesOverview, printContainer) {
-    return new FirefoxPrintService(pdfDocument, pagesOverview, printContainer);
+    return shadow(this, "supportsPrinting", "mozPrintCallback" in canvas);
   }
-
-};
+  static createPrintService(params) {
+    return new FirefoxPrintService(params);
+  }
+}
+export { PDFPrintServiceFactory };

@@ -1,8 +1,4 @@
-/**
- * @licstart The following is the entire license notice for the
- * Javascript code in this page
- *
- * Copyright 2020 Mozilla Foundation
+/* Copyright 2024 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,85 +11,56 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
- * @licend The above is the entire license notice for the
- * Javascript code in this page
  */
-"use strict";
-
-Object.defineProperty(exports, "__esModule", {
-  value: true
-});
-exports.Jbig2Stream = void 0;
-
-var _primitives = require("./primitives.js");
-
-var _stream = require("./stream.js");
-
-var _jbig = require("./jbig2.js");
-
-var _util = require("../shared/util.js");
-
-const Jbig2Stream = function Jbig2StreamClosure() {
-  function Jbig2Stream(stream, maybeLength, dict, params) {
+import { BaseStream } from "./base_stream.js";
+import { DecodeStream } from "./decode_stream.js";
+import { Dict } from "./primitives.js";
+import { JBig2CCITTFaxImage } from "./jbig2_ccittFax.js";
+import { shadow } from "../shared/util.js";
+class Jbig2Stream extends DecodeStream {
+  constructor(stream, maybeLength, params) {
+    super(maybeLength);
     this.stream = stream;
+    this.dict = stream.dict;
     this.maybeLength = maybeLength;
-    this.dict = dict;
     this.params = params;
-
-    _stream.DecodeStream.call(this, maybeLength);
   }
-
-  Jbig2Stream.prototype = Object.create(_stream.DecodeStream.prototype);
-  Object.defineProperty(Jbig2Stream.prototype, "bytes", {
-    get() {
-      return (0, _util.shadow)(this, "bytes", this.stream.getBytes(this.maybeLength));
-    },
-
-    configurable: true
-  });
-
-  Jbig2Stream.prototype.ensureBuffer = function (requested) {};
-
-  Jbig2Stream.prototype.readBlock = function () {
-    if (this.eof) {
-      return;
+  get bytes() {
+    return shadow(this, "bytes", this.stream.getBytes(this.maybeLength));
+  }
+  ensureBuffer(requested) {}
+  get isAsyncDecoder() {
+    return true;
+  }
+  get isImageStream() {
+    return true;
+  }
+  static stripFileHeader(bytes) {
+    if (bytes.length >= 9 && bytes[0] === 0x97 && bytes[1] === 0x4a && bytes[2] === 0x42 && bytes[3] === 0x32 && bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a) {
+      const headerLength = (bytes[8] & 2) === 0 ? 13 : 9;
+      return bytes.subarray(headerLength);
     }
-
-    const jbig2Image = new _jbig.Jbig2Image();
-    const chunks = [];
-
-    if ((0, _primitives.isDict)(this.params)) {
+    return bytes;
+  }
+  async decodeImage(bytes, length, _decoderOptions) {
+    if (this.eof) {
+      return this.buffer;
+    }
+    bytes = Jbig2Stream.stripFileHeader(bytes || this.bytes);
+    let globals = null;
+    if (this.params instanceof Dict) {
       const globalsStream = this.params.get("JBIG2Globals");
-
-      if ((0, _primitives.isStream)(globalsStream)) {
-        const globals = globalsStream.getBytes();
-        chunks.push({
-          data: globals,
-          start: 0,
-          end: globals.length
-        });
+      if (globalsStream instanceof BaseStream) {
+        globals = Jbig2Stream.stripFileHeader(globalsStream.getBytes());
       }
     }
-
-    chunks.push({
-      data: this.bytes,
-      start: 0,
-      end: this.bytes.length
-    });
-    const data = jbig2Image.parseChunks(chunks);
-    const dataLength = data.length;
-
-    for (let i = 0; i < dataLength; i++) {
-      data[i] ^= 0xff;
-    }
-
-    this.buffer = data;
-    this.bufferLength = dataLength;
+    this.buffer = await JBig2CCITTFaxImage.instance.decode(bytes, this.dict.get("Width"), this.dict.get("Height"), globals);
+    this.bufferLength = this.buffer.length;
     this.eof = true;
-  };
-
-  return Jbig2Stream;
-}();
-
-exports.Jbig2Stream = Jbig2Stream;
+    return this.buffer;
+  }
+  get canAsyncDecodeImageFromBuffer() {
+    return this.stream.isAsync;
+  }
+}
+export { Jbig2Stream };

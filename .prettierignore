@@ -1,0 +1,4 @@
+# Copied from pdf.js by scripts/update-pdfjs.mjs, left as pdf.js formats it
+src/pdfjs-dist
+dist
+package-lock.json

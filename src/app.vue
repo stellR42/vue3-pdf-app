@@ -1,61 +1,92 @@
 <template>
-  <div id="app">
-    <button @click="toggleDirection" type="button">
-      Toggle web--page direction
-    </button>
-    <button @click="clearCache">clear cache</button>
-    <div id="nav">
-      <router-link to="/">Home</router-link>|
-      <router-link to="/theme-toggling">Theme toggling</router-link>|
-      <router-link to="/about">About</router-link>
+  <div class="demo">
+    <div class="actions">
+      <button type="button" @click="show = !show">
+        {{ show ? 'Unmount' : 'Mount' }} viewer
+      </button>
+      <button type="button" @click="pdf = pdf ? undefined : '/sample.pdf'">
+        {{ pdf ? 'Clear' : 'Load' }} pdf
+      </button>
+      <button type="button" @click="loadArrayBuffer">
+        Load as ArrayBuffer
+      </button>
+      <button type="button" @click="trimToolbar = !trimToolbar">
+        {{ trimToolbar ? 'Full' : 'Trimmed' }} toolbar
+      </button>
+      <button type="button" @click="theme = nextTheme[theme ?? 'auto']">
+        Theme: {{ theme ?? 'auto' }}
+      </button>
+      <button type="button" @click="toggleDirection">
+        Toggle page direction
+      </button>
     </div>
-    <router-view />
+    <pdf-viewer
+      v-if="show"
+      class="viewer"
+      :pdf="pdf"
+      :config="trimToolbar ? trimmedConfig : undefined"
+      :theme="theme"
+      :page-number="2"
+      file-name="Custom fileName.pdf"
+    />
   </div>
 </template>
 
-<script lang="ts">
-import '@/sass/icons.scss'
-import { defineComponent } from 'vue'
+<script setup lang="ts">
+import { ref } from 'vue';
+import PdfViewer from '@/components/pdf-viewer.vue';
+import { Theme, ToolbarConfig } from '@/types';
 
-export default defineComponent({
-  methods: {
-    toggleDirection () {
-      const dir = document.documentElement.getAttribute('dir')
-      const newDir = dir === 'rtl' ? 'ltr' : 'rtl'
-      document.documentElement.setAttribute('dir', newDir)
-    },
-    clearCache () {
-      window.localStorage.clear()
-    }
-  }
-})
+const show = ref(true);
+const pdf = ref<string | ArrayBuffer | undefined>('/sample.pdf');
+const trimToolbar = ref(false);
+const theme = ref<Theme>();
+
+const trimmedConfig: ToolbarConfig = {
+  sidebar: false,
+  secondaryToolbar: { documentProperties: false, scrollWrapped: false },
+  toolbar: {
+    toolbarViewerRight: { print: false, editorInk: false, editorStamp: false },
+  },
+};
+const nextTheme: Record<string, Theme | undefined> = {
+  auto: 'light',
+  light: 'dark',
+  dark: undefined,
+};
+
+async function loadArrayBuffer() {
+  pdf.value = await (await fetch('/sample.pdf')).arrayBuffer();
+}
+
+function toggleDirection() {
+  const dir = document.documentElement.getAttribute('dir');
+  document.documentElement.setAttribute('dir', dir === 'rtl' ? 'ltr' : 'rtl');
+}
 </script>
 
 <style>
 html,
 body,
 #app {
-  height: 95%;
+  height: 100%;
   margin: 0;
 }
 
-#app {
-  font-family: "Avenir", Helvetica, Arial, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  text-align: center;
-  color: #2c3e50;
-}
-#nav {
-  padding: 30px;
+.demo {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
 }
 
-#nav a {
-  font-weight: bold;
-  color: #2c3e50;
+.actions {
+  padding: 8px;
+  display: flex;
+  gap: 8px;
 }
 
-#nav a.router-link-exact-active {
-  color: #42b983;
+.viewer {
+  flex: 1;
+  min-height: 0;
 }
 </style>
